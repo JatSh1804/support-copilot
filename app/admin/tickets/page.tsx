@@ -240,7 +240,11 @@ export default function AdminTicketsPage() {
       {/* Tickets List */}
       <div className="space-y-4">
         {filteredTickets.map((ticket) => (
-          <Card key={ticket.id} className="hover:shadow-md transition-shadow">
+          <Card 
+            key={ticket.id} 
+            className="hover:shadow-md transition-shadow cursor-pointer"
+            onClick={() => router.push(`/admin/tickets/${ticket.id}`)}
+          >
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between">
                 <div className="flex-1">
