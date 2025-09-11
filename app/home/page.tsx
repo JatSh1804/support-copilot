@@ -7,16 +7,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [ticketInfo, setTicketInfo] = useState<any>(null);
   const [formData, setFormData] = useState({
     name: "",
     email: "",
     subject: "",
-    category: "",
     description: ""
   });
 
@@ -24,46 +23,72 @@ export default function HomePage() {
     e.preventDefault();
     setLoading(true);
     
-    // Simulate ticket submission
-    setTimeout(() => {
-      setLoading(false);
-      setSuccess(true);
-      setFormData({
-        name: "",
-        email: "",
-        subject: "",
-        category: "",
-        description: ""
+    try {
+      const response = await fetch('/api/tickets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData),
       });
-    }, 2000);
+
+      const result = await response.json();
+
+      if (response.ok) {
+        setSuccess(true);
+        setTicketInfo(result.ticket);
+        setFormData({
+          name: "",
+          email: "",
+          subject: "",
+          description: ""
+        });
+      } else {
+        throw new Error(result.error || 'Failed to submit ticket');
+      }
+    } catch (error) {
+      console.error('Error submitting ticket:', error);
+      // Handle error appropriately
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleInputChange = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({...formData, [field]: e.target.value});
   };
 
-  const handleSelectChange = (value: string) => {
-    setFormData({...formData, category: value});
-  };
-
-  if (success) {
+  if (success && ticketInfo) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background px-4">
         <Card className="w-full max-w-md text-center">
           <CardHeader>
-            <CardTitle className="text-green-600">Ticket Submitted!</CardTitle>
+            <CardTitle className="text-green-600">Ticket Submitted Successfully!</CardTitle>
             <CardDescription>
               Your support request has been received and is being processed by our AI system.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="p-4 bg-green-50 dark:bg-green-950 rounded-lg">
-              <p className="text-sm text-green-700 dark:text-green-300">
-                🤖 Our AI will classify your ticket and route it to the appropriate team member.
-              </p>
+              <div className="space-y-2">
+                <p className="font-medium text-green-700 dark:text-green-300">
+                  Ticket Number: {ticketInfo.ticketNumber}
+                </p>
+                <p className="text-sm text-green-700 dark:text-green-300">
+                  🤖 Our AI will classify your ticket and route it to the appropriate team member.
+                </p>
+                {ticketInfo.trackingToken && (
+                  <p className="text-xs text-green-600 dark:text-green-400">
+                    Save this ticket number to track your request later.
+                  </p>
+                )}
+              </div>
             </div>
             <Button 
-              onClick={() => setSuccess(false)}
+              onClick={() => {
+                setSuccess(false);
+                setTicketInfo(null);
+              }}
               className="w-full"
             >
               Submit Another Ticket
@@ -139,27 +164,6 @@ export default function HomePage() {
                   placeholder="Brief description of your issue"
                   required
                 />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="category">Category</Label>
-                <Select value={formData.category} onValueChange={handleSelectChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="how-to">How-to Question</SelectItem>
-                    <SelectItem value="product">Product Issue</SelectItem>
-                    <SelectItem value="connector">Connector Problem</SelectItem>
-                    <SelectItem value="lineage">Data Lineage</SelectItem>
-                    <SelectItem value="api">API/SDK</SelectItem>
-                    <SelectItem value="sso">SSO/Authentication</SelectItem>
-                    <SelectItem value="glossary">Glossary Management</SelectItem>
-                    <SelectItem value="best-practices">Best Practices</SelectItem>
-                    <SelectItem value="sensitive-data">Sensitive Data</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
               </div>
 
               <div className="space-y-2">

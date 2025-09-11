@@ -23,7 +23,7 @@ export default function AdminLayout({
                 </Link>
               </div>
             </div>
-            {/* <AuthButton /> */}
+            <AuthButton />
           </div>
         </nav>
         <div className="flex-1 flex flex-col gap-20 max-w-5xl p-5">
