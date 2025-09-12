@@ -18,59 +18,49 @@ import {
 } from 'lucide-react';
 import type { User } from "@supabase/supabase-js";
 
-// Sample ticket data for demonstration
-const sampleTickets = [
-  {
-    id: 'TICKET-001',
-    subject: 'Cannot connect to Snowflake',
-    description: 'Getting authentication errors when trying to set up Snowflake connector...',
-    email: 'user@company.com',
-    status: 'open',
-    priority: 'high',
-    createdAt: new Date().toISOString(),
-    classification: {
-      topicTags: ['Connector', 'How-to'],
-      sentiment: 'Frustrated',
-      priority: 'P0'
+function useAdminTickets() {
+  const [tickets, setTickets] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchTickets() {
+      setLoading(true);
+      try {
+        const res = await fetch('/api/tickets');
+        const data = await res.json();
+        if (data.tickets) {
+          setTickets(data.tickets.map((t: any) => ({
+            ...t,
+            id: t.ticket_number,
+            classification: {
+              topicTags: t.topic_tags || [],
+              sentiment: t.sentiment || '',
+              priority: t.ai_priority || '',
+              confidence: t.classification_confidence || 0
+            },
+            createdAt: t.created_at,
+            priority: t.priority,
+            status: t.status
+          })));
+        }
+      } catch (err) {
+        setTickets([]);
+      }
+      setLoading(false);
     }
-  },
-  {
-    id: 'TICKET-002',
-    subject: 'API documentation unclear',
-    description: 'The Python SDK documentation is missing examples for bulk operations...',
-    email: 'dev@startup.com',
-    status: 'in-progress',
-    priority: 'medium',
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    classification: {
-      topicTags: ['API/SDK', 'Best practices'],
-      sentiment: 'Curious',
-      priority: 'P1'
-    }
-  },
-  {
-    id: 'TICKET-003',
-    subject: 'Lineage not showing for dbt models',
-    description: 'Our dbt models are connected but lineage is not appearing in the UI...',
-    email: 'analyst@corp.com',
-    status: 'resolved',
-    priority: 'low',
-    createdAt: new Date(Date.now() - 172800000).toISOString(),
-    classification: {
-      topicTags: ['Lineage', 'Product'],
-      sentiment: 'Neutral',
-      priority: 'P2'
-    }
-  }
-];
+    fetchTickets();
+  }, []);
+
+  return { tickets, loading };
+}
 
 export default function AdminTicketsPage() {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [tickets, setTickets] = useState(sampleTickets);
   const [filter, setFilter] = useState('all');
   const router = useRouter();
+  
   const supabase = createClient();
+  const { tickets, loading } = useAdminTickets();
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -82,7 +72,6 @@ export default function AdminTicketsPage() {
       }
       
       setUser(user);
-      setIsLoading(false);
     };
 
     checkAuth();
@@ -136,7 +125,7 @@ export default function AdminTicketsPage() {
     return ticket.status === filter;
   });
 
-  if (isLoading) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
         <div className="text-center">
@@ -278,7 +267,7 @@ export default function AdminTicketsPage() {
                 <div className="flex flex-wrap gap-2">
                   <div className="flex items-center gap-1">
                     <span className="text-xs font-medium">Topics:</span>
-                    {ticket.classification.topicTags.map((tag, index) => (
+                    {ticket.classification.topicTags.map((tag:any, index:number) => (
                       <Badge key={index} variant="secondary" className="text-xs">
                         {tag}
                       </Badge>

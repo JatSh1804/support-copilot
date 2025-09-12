@@ -105,6 +105,19 @@ CREATE TABLE ticket_tracking_tokens (
 -- Create index for tracking tokens
 CREATE INDEX idx_tracking_token ON ticket_tracking_tokens(tracking_token);
 
+-- Table to store embeddings for prefilled classification fields (topic tags, sentiment, priority)
+CREATE TABLE prefilled_embeddings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type TEXT NOT NULL, -- 'topic', 'sentiment', 'priority'
+    value TEXT NOT NULL, -- e.g. 'Connector', 'Frustrated', 'P0'
+    embedding vector(1536) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(type, value)
+);
+
+-- Create index for fast lookup
+CREATE INDEX idx_prefilled_embeddings_type_value ON prefilled_embeddings(type, value);
+
 -- Function to generate ticket numbers
 CREATE OR REPLACE FUNCTION generate_ticket_number()
 RETURNS TRIGGER AS $$
@@ -165,9 +178,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to find similar tickets using vector similarity
+-- Function to find similar tickets using vector similarity (accepts input_ticket_id)
 CREATE OR REPLACE FUNCTION match_tickets(
-  query_embedding vector(1536),
+  input_ticket_id uuid,
   match_threshold float DEFAULT 0.7,
   match_count int DEFAULT 5
 )
@@ -180,15 +193,26 @@ RETURNS TABLE (
 )
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  query_embedding vector(1536);
 BEGIN
+  -- Get embedding for the given ticket_id
+  SELECT te.embedding INTO query_embedding
+  FROM ticket_embeddings te
+  WHERE te.ticket_id = input_ticket_id AND te.content_type = 'combined'
+  LIMIT 1;
+
+  IF query_embedding IS NULL THEN
+    RAISE EXCEPTION 'No embedding found for ticket %', input_ticket_id;
+  END IF;
+
   RETURN QUERY
   SELECT
     t.id AS ticket_id,
-    t.subject,
-    t.description,
-    -- Get the latest resolution from responses
+    t.subject::text,
+    t.description::text,
     (
-      SELECT tr.content
+      SELECT tr.content::text
       FROM ticket_responses tr
       WHERE tr.ticket_id = t.id 
         AND tr.response_type = 'support'
@@ -201,10 +225,131 @@ BEGIN
   JOIN tickets t ON te.ticket_id = t.id
   WHERE te.embedding <=> query_embedding < 1 - match_threshold
     AND t.status IN ('resolved', 'closed')
+    AND t.id <> input_ticket_id -- Exclude the current ticket itself
   ORDER BY te.embedding <=> query_embedding
   LIMIT match_count;
 END;
 $$;
+
+-- Function: classify_ticket_by_embedding
+CREATE OR REPLACE FUNCTION classify_ticket_by_embedding(
+  input_ticket_id uuid
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  ticket_emb vector(1536);
+  topic_matches TEXT[];
+  sentiment_match TEXT;
+  priority_match TEXT;
+  topic_scores JSONB := '[]'::jsonb;
+  sentiment_scores JSONB := '[]'::jsonb;
+  priority_scores JSONB := '[]'::jsonb;
+  confidence FLOAT := NULL;
+BEGIN
+  -- Get ticket embedding
+  SELECT embedding INTO ticket_emb
+  FROM ticket_embeddings
+  WHERE ticket_id = input_ticket_id AND content_type = 'combined'
+  LIMIT 1;
+
+  IF ticket_emb IS NULL THEN
+    RAISE EXCEPTION 'No embedding found for ticket %', input_ticket_id;
+  END IF;
+
+  -- Topic tags: get top 3 by similarity
+  topic_matches := ARRAY(
+    SELECT value
+    FROM prefilled_embeddings
+    WHERE type = 'topic'
+    ORDER BY (embedding <=> ticket_emb)
+    LIMIT 3
+  );
+  topic_scores := (
+    SELECT jsonb_agg(jsonb_build_object('value', value, 'score', 1 - (embedding <=> ticket_emb)))
+    FROM (
+      SELECT value, embedding
+      FROM prefilled_embeddings
+      WHERE type = 'topic'
+      ORDER BY (embedding <=> ticket_emb)
+      LIMIT 3
+    ) sub
+  );
+
+  -- Sentiment: get top 1 by similarity
+  sentiment_match := (
+    SELECT value
+    FROM prefilled_embeddings
+    WHERE type = 'sentiment'
+    ORDER BY (embedding <=> ticket_emb)
+    LIMIT 1
+  );
+  sentiment_scores := (
+    SELECT jsonb_agg(jsonb_build_object('value', value, 'score', 1 - (embedding <=> ticket_emb)))
+    FROM (
+      SELECT value, embedding
+      FROM prefilled_embeddings
+      WHERE type = 'sentiment'
+      ORDER BY (embedding <=> ticket_emb)
+      LIMIT 1
+    ) sub
+  );
+
+  -- Priority: get top 1 by similarity
+  priority_match := (
+    SELECT value
+    FROM prefilled_embeddings
+    WHERE type = 'priority'
+    ORDER BY (embedding <=> ticket_emb)
+    LIMIT 1
+  );
+  priority_scores := (
+    SELECT jsonb_agg(jsonb_build_object('value', value, 'score', 1 - (embedding <=> ticket_emb)))
+    FROM (
+      SELECT value, embedding
+      FROM prefilled_embeddings
+      WHERE type = 'priority'
+      ORDER BY (embedding <=> ticket_emb)
+      LIMIT 1
+    ) sub
+  );
+
+  -- Set confidence to the highest topic score (fix aggregate error)
+  SELECT score INTO confidence
+  FROM (
+    SELECT 1 - (embedding <=> ticket_emb) AS score
+    FROM prefilled_embeddings
+    WHERE type = 'topic'
+    ORDER BY score DESC
+    LIMIT 1
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'topic_tags', topic_matches,
+    'sentiment', sentiment_match,
+    'priority', priority_match,
+    'scores', jsonb_build_object(
+      'topics', topic_scores,
+      'sentiment', sentiment_scores,
+      'priority', priority_scores,
+      'confidence', confidence
+    )
+  );
+END;
+$$;
+
+-- Table to store similar tickets for each ticket (for reference and UI rendering)
+CREATE TABLE ticket_similarities (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    similar_ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    similarity_score DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_ticket_similarities_ticket_id ON ticket_similarities(ticket_id);
+CREATE INDEX idx_ticket_similarities_similar_ticket_id ON ticket_similarities(similar_ticket_id);
 
 -- Triggers
 CREATE TRIGGER trigger_generate_ticket_number

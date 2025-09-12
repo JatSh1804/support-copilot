@@ -46,7 +46,7 @@ export async function GET(
         .eq('ticket_number', ticketId)
         .single();
     } else {
-      // Admin access - full details
+      // Admin access - full details including classification and assignment
       ticketQuery = supabase
         .from('tickets')
         .select(`

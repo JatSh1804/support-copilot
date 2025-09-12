@@ -27,61 +27,60 @@ import {
 } from 'lucide-react';
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 
-// Sample ticket data - in real app this would come from API
-const sampleTickets = {
-  'TICKET-001': {
-    id: 'TICKET-001',
-    subject: 'Cannot connect to Snowflake',
-    description: 'Getting authentication errors when trying to set up Snowflake connector. I have checked the credentials multiple times and they work fine in other tools. The error message says "Invalid credentials" but I\'m certain they are correct. This is blocking our entire data pipeline and is very urgent.',
-    email: 'user@company.com',
-    name: 'John Smith',
-    status: 'open',
-    priority: 'high',
-    createdAt: '2024-01-15T10:30:00Z',
-    updatedAt: '2024-01-15T10:30:00Z',
-    responses: [
-      {
-        id: '1',
-        author: 'John Smith',
-        content: 'Getting authentication errors when trying to set up Snowflake connector...',
-        timestamp: '2024-01-15T10:30:00Z',
-        type: 'customer'
+function useAdminTicketDetail(ticketId: string) {
+  const [ticket, setTicket] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchTicket() {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/tickets/${ticketId}`);
+        const data = await res.json();
+        if (data.ticket) {
+          setTicket({
+            ...data.ticket,
+            id: data.ticket.ticket_number,
+            classification: {
+              topicTags: data.ticket.topic_tags || [],
+              sentiment: data.ticket.sentiment || '',
+              priority: data.ticket.ai_priority || '',
+              confidence: data.ticket.classification_confidence || 0,
+              aiResponse: data.aiResponse
+                ? {
+                    answer: data.aiResponse.generated_response,
+                    sources: Array.isArray(data.aiResponse.sources)
+                      ? data.aiResponse.sources
+                      : [],
+                    confidence: data.aiResponse.confidence_score || 0
+                  }
+                : undefined
+            },
+            responses: data.responses || [],
+            createdAt: data.ticket.created_at,
+            updatedAt: data.ticket.updated_at,
+            priority: data.ticket.priority,
+            status: data.ticket.status,
+            name: data.ticket.name,
+            email: data.ticket.email,
+            subject: data.ticket.subject,
+            description: data.ticket.description
+          });
+        }
+      } catch (err) {
+        setTicket(null);
       }
-    ],
-    classification: {
-      topicTags: ['Connector', 'How-to', 'Product'],
-      sentiment: 'Frustrated',
-      priority: 'P0',
-      confidence: 0.85,
-      aiResponse: {
-        answer: 'Based on your description, this appears to be a common Snowflake connector authentication issue. Here are the recommended troubleshooting steps:\n\n1. **Verify Connection Parameters**: Ensure your account identifier follows the correct format (account-region.snowflakecomputing.com)\n\n2. **Check User Permissions**: The user account needs appropriate warehouse and database permissions\n\n3. **Network Configuration**: Verify that your network allows connections to Snowflake on the required ports\n\n4. **Credential Format**: Ensure there are no hidden characters or spaces in your credentials',
-        sources: [
-          {
-            title: 'Snowflake Connector Setup Guide',
-            url: 'https://docs.atlan.com/connectors/snowflake/setup',
-            snippet: 'Authentication configuration for Snowflake connections'
-          },
-          {
-            title: 'Troubleshooting Connection Issues',
-            url: 'https://docs.atlan.com/troubleshooting/connectors',
-            snippet: 'Common solutions for connector authentication problems'
-          },
-          {
-            title: 'Network Requirements',
-            url: 'https://docs.atlan.com/setup/network-requirements',
-            snippet: 'Required network configurations for cloud connectors'
-          }
-        ],
-        confidence: 0.92
-      }
+      setLoading(false);
     }
-  }
-};
+    if (ticketId) fetchTicket();
+  }, [ticketId]);
+
+  return { ticket, loading };
+}
 
 export default function TicketDetailPage() {
   const [user, setUser] = useState<SupabaseUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [ticket, setTicket] = useState<any>(null);
   const [response, setResponse] = useState('');
   const [isResponding, setIsResponding] = useState(false);
   const [leftWidth, setLeftWidth] = useState(50);
@@ -91,7 +90,7 @@ export default function TicketDetailPage() {
   const params = useParams();
   const supabase = createClient();
   const ticketId = params.ticketId as string;
-
+  const { ticket, loading } = useAdminTicketDetail(ticketId);
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -103,17 +102,11 @@ export default function TicketDetailPage() {
       
       setUser(user);
       
-      // Load ticket data
-      const ticketData = sampleTickets[ticketId as keyof typeof sampleTickets];
-      if (ticketData) {
-        setTicket(ticketData);
-      }
-      
       setIsLoading(false);
     };
 
     checkAuth();
-  }, [router, supabase, ticketId]);
+  }, [router]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);
@@ -201,7 +194,7 @@ export default function TicketDetailPage() {
     }, 1000);
   };
 
-  if (isLoading) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
         <div className="text-center">

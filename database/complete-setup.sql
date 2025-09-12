@@ -262,27 +262,89 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- RPC function to process classification
-CREATE OR REPLACE FUNCTION process_classification()
+-- RPC function to process classification (batch jobs from classification_queue)
+CREATE OR REPLACE FUNCTION process_classification(
+    batch_size INTEGER DEFAULT 5,
+    max_requests INTEGER DEFAULT 10,
+    timeout_ms INTEGER DEFAULT 30000
+)
 RETURNS JSONB AS $$
 DECLARE
-    result JSONB;
+    job_batches JSONB[];
+    batch JSONB;
+    jobs_processed INTEGER := 0;
+    start_time TIMESTAMP;
 BEGIN
-    SELECT net.http_post(
-        url := get_config('supabase_url') || '/functions/v1/process-classification',
-        headers := jsonb_build_object(
-            'Authorization', 'Bearer ' || get_config('service_role_key'),
-            'Content-Type', 'application/json',
-            'User-Agent', 'pg_cron/1.0'
-        ),
-        body := jsonb_build_object(
-            'trigger', 'cron',
-            'timestamp', extract(epoch from now())
-        ),
-        timeout_milliseconds := 60000
-    ) INTO result;
-    
-    RETURN result;
+    start_time := NOW();
+
+    RAISE LOG 'process_classification() started - batch_size: %, max_requests: %', batch_size, max_requests;
+
+    -- Read jobs from classification queue and batch them
+    WITH numbered_jobs AS (
+        SELECT
+            message || jsonb_build_object('jobId', msg_id) AS job_info,
+            (row_number() OVER (ORDER BY enqueued_at) - 1) / batch_size AS batch_num
+        FROM pgmq.read(
+            queue_name := 'classification_queue',
+            vt := timeout_ms / 1000,
+            qty := max_requests * batch_size
+        )
+    ),
+    batched_jobs AS (
+        SELECT
+            jsonb_agg(job_info) AS batch_array,
+            batch_num
+        FROM numbered_jobs
+        GROUP BY batch_num
+    )
+    SELECT array_agg(batch_array)
+    FROM batched_jobs
+    INTO job_batches;
+
+    -- If no jobs found, return early
+    IF job_batches IS NULL OR array_length(job_batches, 1) = 0 THEN
+        RAISE LOG 'No classification jobs found in queue';
+        RETURN jsonb_build_object(
+            'status', 'no_jobs',
+            'message', 'No jobs in classification queue',
+            'batches_processed', 0,
+            'timestamp', extract(epoch from start_time),
+            'execution_time_ms', EXTRACT(MILLISECONDS FROM (NOW() - start_time))
+        );
+    END IF;
+
+    RAISE LOG 'Found % batches to process', array_length(job_batches, 1);
+
+    -- Invoke the classification edge function for each batch
+    FOREACH batch IN ARRAY job_batches LOOP
+        BEGIN
+            PERFORM invoke_edge_function(
+                function_name := 'process-classification',
+                request_body := batch,
+                timeout_ms := timeout_ms
+            );
+            jobs_processed := jobs_processed + jsonb_array_length(batch);
+            RAISE LOG 'Processed batch with % jobs', jsonb_array_length(batch);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE LOG 'Error processing classification batch: %', SQLERRM;
+        END;
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'status', 'processed',
+        'batches_processed', array_length(job_batches, 1),
+        'jobs_processed', jobs_processed,
+        'timestamp', extract(epoch from start_time),
+        'execution_time_ms', EXTRACT(MILLISECONDS FROM (NOW() - start_time))
+    );
+
+EXCEPTION WHEN OTHERS THEN
+    RAISE LOG 'Error in process_classification: %', SQLERRM;
+    RETURN jsonb_build_object(
+        'status', 'error',
+        'message', SQLERRM,
+        'timestamp', extract(epoch from start_time)
+    );
 END;
 $$ LANGUAGE plpgsql;
 

@@ -1,12 +1,16 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import postgres from 'https://deno.land/x/postgresjs@v3.4.5/mod.js'
+
+const sql = postgres(Deno.env.get('SUPABASE_DB_URL') ?? '')
+const QUEUE_NAME = 'classification_queue'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -19,43 +23,94 @@ serve(async (req) => {
 
     console.log('Starting classification processing...')
 
-    // Receive messages from the classification queue
-    const { data: messages, error: receiveError } = await supabaseClient.rpc('pgmq_receive', {
-      queue_name: 'classification_queue',
-      vt: 60, // visibility timeout of 60 seconds (classification takes longer)
-      qty: 3   // process up to 3 messages at once
-    })
+    // Get the request body containing batch of jobs
+    const requestBody = await req.json()
+    console.log("Received request body:", JSON.stringify(requestBody))
 
-    if (receiveError) {
-      console.error('Error receiving messages:', receiveError)
-      throw receiveError
-    }
+    // Handle both single job and batch processing
+    const jobs = Array.isArray(requestBody) ? requestBody : [requestBody]
+    console.log(`Processing ${jobs.length} classification jobs`)
 
-    if (!messages || messages.length === 0) {
-      console.log('No messages in classification queue')
-      return new Response(
-        JSON.stringify({ message: 'No messages to process' }),
-        { 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200 
-        }
-      )
-    }
+    const completedJobs: any[] = []
+    const failedJobs: any[] = []
 
-    console.log(`Processing ${messages.length} classification messages`)
-
-    const processedMessages = []
-
-    for (const message of messages) {
+    // Process each job in the batch
+    for (const job of jobs) {
       try {
-        const payload = message.message
-        console.log(`Classifying ticket: ${payload.ticket_number}`)
+        console.log(`Processing job: ${job.jobId} for ticket ${job.ticket_id}`)
 
-        // Step 1: Classify the ticket using OpenAI
+        // Get ticket data for classification
+        const { data: ticket, error: ticketError } = await supabaseClient
+          .from('tickets')
+          .select('id, subject, description')
+          .eq('id', job.ticket_id)
+          .single();
+
+        if (ticketError || !ticket) {
+          throw new Error(`Ticket not found: ${job.ticket_id}`);
+        }
+
+        // Call RPC to classify ticket using pgvector similarity
+        const { data: classificationData, error: classificationError } = await supabaseClient
+          .rpc('classify_ticket_by_embedding', {
+            input_ticket_id: job.ticket_id // <-- use correct parameter name
+          });
+
+        if (classificationError || !classificationData) {
+          throw new Error('Error classifying ticket via embedding RPC:', classificationError);
+        }
+
+        // Get similar tickets for RAG context using ticket_id directly
+        const { data: similarTickets, error: similarError } = await supabaseClient
+          .rpc('match_tickets', {
+            input_ticket_id: job.ticket_id,
+            match_threshold: 0.7,
+            match_count: 5
+          });
+
+        if (similarError) {
+          console.warn('Error getting similar tickets:', similarError);
+        }
+
+        // Prepare context from similar tickets
+        const context = similarTickets?.map((t: any) =>
+          `Ticket: ${t.subject}\nResolution: ${t.resolution || 'No resolution available'}`
+        ).join('\n\n') || 'No similar tickets found';
+
+        // AI Classification using OpenAI (for response only)
+        const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
+        if (!openaiApiKey) {
+          throw new Error('OPENAI_API_KEY environment variable is not set')
+        }
+
+        const classificationPrompt = `
+Analyze this customer support ticket and provide a helpful response.
+
+TICKET DETAILS:
+Subject: ${ticket.subject}
+Description: ${ticket.description}
+
+CLASSIFICATION:
+Topic tags: ${JSON.stringify(classificationData.topic_tags)}
+Sentiment: ${classificationData.sentiment}
+Priority: ${classificationData.priority}
+
+SIMILAR RESOLVED TICKETS:
+${context}
+
+Please provide:
+1. AI-generated response to customer
+
+Format as JSON:
+{
+  "ai_response": "Your response here"
+}
+`
+
         const classificationResponse = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${Deno.env.get('OPENAI_API_KEY')}`,
+            'Authorization': `Bearer ${openaiApiKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -63,220 +118,143 @@ serve(async (req) => {
             messages: [
               {
                 role: 'system',
-                content: `You are an expert at classifying customer support tickets for Atlan, a data cataloging and governance platform. 
-
-Analyze the ticket and provide classification in this exact JSON format:
-{
-  "topic_tags": ["tag1", "tag2", "tag3"],
-  "sentiment": "Frustrated|Angry|Curious|Neutral|Happy",
-  "priority": "P0|P1|P2",
-  "confidence": 0.85
-}
-
-Topic tags should be from: Connector, How-to, Product, API/SDK, Best practices, Lineage, Glossary, SSO/Authentication, Sensitive Data, Performance, Integration, Configuration, Troubleshooting, Feature Request, Bug Report
-
-Priority levels:
-- P0: Critical issues blocking workflows, security issues, data loss
-- P1: Important features not working, significant user impact  
-- P2: Minor issues, questions, enhancement requests
-
-Sentiment:
-- Frustrated: User is having trouble, blocked, expressing frustration
-- Angry: User is upset, demanding, using strong negative language
-- Curious: User is learning, asking questions, exploring features
-- Neutral: Professional, matter-of-fact tone
-- Happy: Positive feedback, thanks, satisfaction`
+                content: 'You are an expert customer support AI that provides helpful responses.'
               },
               {
                 role: 'user',
-                content: `Subject: ${payload.subject}\n\nDescription: ${payload.description}`
+                content: classificationPrompt
               }
             ],
-            temperature: 0.1,
+            temperature: 0.3,
+            max_tokens: 1000
           }),
         })
 
         if (!classificationResponse.ok) {
           const errorText = await classificationResponse.text()
-          throw new Error(`OpenAI classification error: ${classificationResponse.status} - ${errorText}`)
+          throw new Error(`OpenAI API error: ${classificationResponse.status} - ${errorText}`)
         }
 
-        const classificationData = await classificationResponse.json()
-        const classificationResult = JSON.parse(classificationData.choices[0].message.content)
-
-        console.log(`Classified ticket ${payload.ticket_number}:`, classificationResult)
-
-        // Step 2: Find similar tickets using vector similarity
-        const { data: similarTickets, error: similarityError } = await supabaseClient.rpc('match_tickets', {
-          query_embedding: payload.embedding,
-          match_threshold: 0.7,
-          match_count: 5
-        })
-
-        if (similarityError) {
-          console.error('Error finding similar tickets:', similarityError)
+        const classificationResultData = await classificationResponse.json();
+        let aiResponse;
+        try {
+          // Sanitize control characters and parse
+          const rawContent = classificationResultData.choices[0].message.content;
+          const sanitizedContent = rawContent.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
+          aiResponse = JSON.parse(sanitizedContent).ai_response;
+        } catch (err) {
+          console.error("Error parsing AI response JSON:", err, classificationResultData.choices[0].message.content);
+          throw new Error("Failed to parse AI response JSON");
         }
 
-        // Step 3: Generate AI response using RAG
-        const contextTickets = similarTickets?.map(ticket => 
-          `Ticket: ${ticket.subject}\nDescription: ${ticket.description}\nResolution: ${ticket.resolution || 'Not resolved'}`
-        ).join('\n\n') || ''
-
-        const responsePrompt = `Based on similar tickets and Atlan documentation, provide a helpful response to this customer support ticket.
-
-Customer Ticket:
-Subject: ${payload.subject}
-Description: ${payload.description}
-
-Similar Resolved Tickets:
-${contextTickets}
-
-Provide a response that:
-1. Acknowledges their specific issue
-2. Provides step-by-step guidance
-3. References relevant documentation
-4. Is professional and helpful
-
-Format your response as JSON:
-{
-  "answer": "Your detailed response here...",
-  "confidence": 0.85,
-  "sources": [
-    {
-      "title": "Documentation Title",
-      "url": "https://docs.atlan.com/...",
-      "snippet": "Relevant excerpt..."
-    }
-  ]
-}`
-
-        const aiResponseResult = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${Deno.env.get('OPENAI_API_KEY')}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4',
-            messages: [
-              {
-                role: 'system',
-                content: 'You are a helpful Atlan support agent with deep knowledge of the platform.'
-              },
-              {
-                role: 'user',
-                content: responsePrompt
-              }
-            ],
-            temperature: 0.3,
-          }),
-        })
-
-        let aiResponse = null
-        if (aiResponseResult.ok) {
-          const aiResponseData = await aiResponseResult.json()
-          try {
-            aiResponse = JSON.parse(aiResponseData.choices[0].message.content)
-          } catch (e) {
-            console.error('Error parsing AI response:', e)
-          }
-        }
-
-        // Step 4: Update ticket with classification results
+        // Update ticket with classification results
         const { error: updateError } = await supabaseClient
           .from('tickets')
           .update({
-            topic_tags: classificationResult.topic_tags,
-            sentiment: classificationResult.sentiment,
-            ai_priority: classificationResult.priority,
-            classification_confidence: classificationResult.confidence,
+            topic_tags: classificationData.topic_tags,
+            sentiment: classificationData.sentiment,
+            ai_priority: classificationData.priority,
+            classification_confidence: classificationData.scores?.confidence ?? null,
             status: 'classified',
             classification_completed_at: new Date().toISOString()
           })
-          .eq('id', payload.ticket_id)
+          .eq('id', job.ticket_id)
 
         if (updateError) {
-          console.error('Error updating ticket:', updateError)
+          console.error('Error updating ticket classification:', updateError)
           throw updateError
         }
 
-        // Step 5: Store AI response if generated
-        if (aiResponse) {
-          const { error: aiResponseError } = await supabaseClient
-            .from('ai_responses')
-            .insert({
-              ticket_id: payload.ticket_id,
-              generated_response: aiResponse.answer,
-              confidence_score: aiResponse.confidence,
-              sources: aiResponse.sources || []
-            })
+        // Store AI response
+        const { error: aiResponseError } = await supabaseClient
+          .from('ai_responses')
+          .insert({
+            ticket_id: job.ticket_id,
+            generated_response: aiResponse,
+            confidence_score: classificationData.scores?.confidence ?? null,
+            sources: similarTickets?.map((t: any) => ({
+              title: t.subject,
+              content: t.resolution || 'No resolution available',
+              similarity: t.similarity
+            })) || []
+          })
 
-          if (aiResponseError) {
-            console.error('Error storing AI response:', aiResponseError)
+        if (aiResponseError) {
+          console.error('Error storing AI response:', aiResponseError)
+        }
+
+        // Store similar tickets in ticket_similarities table
+        if (Array.isArray(similarTickets)) {
+          for (const sim of similarTickets) {
+            await supabaseClient
+              .from('ticket_similarities')
+              .upsert({
+                ticket_id: job.ticket_id,
+                similar_ticket_id: sim.ticket_id,
+                similarity_score: sim.similarity
+              }, { onConflict: ['ticket_id', 'similar_ticket_id'] });
           }
         }
 
-        console.log(`Completed classification for ticket ${payload.ticket_number}`)
-
-        // Delete message from queue
-        const { error: deleteError } = await supabaseClient.rpc('pgmq_delete', {
-          queue_name: 'classification_queue',
-          msg_id: message.msg_id
-        })
-
-        if (deleteError) {
-          console.error('Error deleting message from queue:', deleteError)
+        // Remove job from queue using safe function
+        try {
+          await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`
+        } catch (deleteError) {
+          console.error('Error deleting job from queue (direct SQL):', deleteError)
         }
 
-        processedMessages.push({
-          ticket_id: payload.ticket_id,
-          ticket_number: payload.ticket_number,
-          status: 'completed',
-          classification: classificationResult,
-          ai_response_generated: !!aiResponse,
-          similar_tickets_found: similarTickets?.length || 0
-        })
+        console.log(`Completed classification for ticket ${job.ticket_number}`)
+        completedJobs.push(job)
 
       } catch (error) {
-        console.error(`Error processing classification message ${message.msg_id}:`, error)
-        
-        // Delete failed message to prevent infinite loops
-        const { error: deleteError } = await supabaseClient.rpc('pgmq_delete', {
-          queue_name: 'classification_queue',
-          msg_id: message.msg_id
-        })
+        console.error(`Error processing job ${job.jobId}:`, error)
 
-        if (deleteError) {
-          console.error('Error deleting failed message:', deleteError)
-        }
-
-        processedMessages.push({
-          ticket_id: message.message.ticket_id,
-          ticket_number: message.message.ticket_number,
-          status: 'failed',
+        // Mark job as failed
+        failedJobs.push({
+          ...job,
           error: error instanceof Error ? error.message : 'Unknown error'
         })
+
+        // Still try to remove failed job from queue
+        try {
+          await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`
+        } catch (deleteError) {
+          console.error('Error deleting failed job (direct SQL):', deleteError)
+        }
       }
     }
 
     return new Response(
       JSON.stringify({
-        message: `Processed ${processedMessages.length} classification messages`,
-        results: processedMessages
+        message: `Processed ${jobs.length} classification jobs`,
+        completedJobs: completedJobs.length,
+        failedJobs: failedJobs.length,
+        results: {
+          completed: completedJobs,
+          failed: failedJobs
+        }
       }),
-      { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200 
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+          'x-completed-jobs': completedJobs.length.toString(),
+          'x-failed-jobs': failedJobs.length.toString()
+        },
+        status: 200
       }
     )
 
   } catch (error) {
     console.error('Unexpected error:', error)
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { 
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString()
+      }),
+      {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500 
+        status: 500
       }
     )
   }

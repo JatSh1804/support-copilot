@@ -402,6 +402,191 @@ Deno.serve(async (req)=>{
     throw new Error(`Error updating database: ${updateError.message}`);
   }
 }
+
+/**
+ * Helper: compute cosine similarity between two numeric arrays
+ */
+function cosineSimilarity(a: number[], b: number[]) {
+	// ...basic validation...
+	if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return -1;
+	let dot = 0, na = 0, nb = 0;
+	for (let i = 0; i < a.length; i++) {
+		dot += a[i] * b[i];
+		na += a[i] * a[i];
+		nb += b[i] * b[i];
+	}
+	if (na === 0 || nb === 0) return -1;
+	return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/**
+ * Helper: return top matches from a list of {label, embedding, metadata}
+ */
+function topMatches(items, queryEmbedding, topK = 3) {
+	const scored = items.map((it) => {
+		const emb = Array.isArray(it.embedding) ? it.embedding : (it.embedding?.value || it.embedding);
+		const score = Array.isArray(emb) ? cosineSimilarity(queryEmbedding, emb) : -1;
+		return { ...it, score };
+	});
+	return scored.sort((a, b) => b.score - a.score).slice(0, topK);
+}
+
+/**
+ * Minimal text-generation wrapper (fallback if you want to call an inference endpoint)
+ * Tries configured PROVIDERS; if none available, returns a templated summary.
+ */
+async function generateText(prompt) {
+	const provider = PROVIDERS.find((p) => p.name === DEFAULT_PROVIDER) || PROVIDERS[0];
+	if (!provider?.apiKey) {
+		// Fallback: simple deterministic summary
+		return `Classification summary:\n${prompt.slice(0, 800)}...`;
+	}
+	try {
+		const endpoint = provider.baseURL + 'completions'; // generic endpoint - adjust per provider
+		const body = JSON.stringify({
+			prompt,
+			max_tokens: 400,
+			temperature: 0.2,
+			model: 'gpt-lite' // placeholder; replace with actual model name the provider supports
+		});
+		const res = await fetch(endpoint, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${provider.apiKey}`
+			},
+			body
+		});
+		if (!res.ok) {
+			const txt = await res.text();
+			console.error('Text generation error:', res.status, txt);
+			return `Generated summary unavailable (status ${res.status}).`;
+		}
+		const data = await res.json();
+		// Try common response shapes
+		if (data.choices && data.choices[0]?.text) return data.choices[0].text;
+		if (data.output && Array.isArray(data.output) && data.output[0]?.content) return data.output[0].content;
+		if (typeof data === 'string') return data;
+		return JSON.stringify(data).slice(0, 1000);
+	} catch (err) {
+		console.error('generateText failed:', err.message);
+		return `Generated summary unavailable (error).`;
+	}
+}
+
+/**
+ * New: processClassification(job)
+ * - job: { jobId, id, schema, table, contentFunction, ... }
+ * - Uses generateEmbedding() to embed row content, compares with stored reference label embeddings,
+ *   retrieves top-k relevant documentation pages, generates an AI response, and updates the row.
+ */
+async function processClassification(job) {
+	const { jobId, id, schema, table, contentFunction } = job;
+	console.log(`Processing classification job: ${jobId} for ${schema}.${table}/${id}`);
+	// 1) fetch content
+	let row;
+	try {
+		const result = await sql`
+			select id, ${sql(contentFunction)}(t) as content
+			from ${sql(schema)}.${sql(table)} t
+			where id = ${id}
+		`;
+		if (!result || result.length === 0) throw new Error('row not found');
+		row = result[0];
+	} catch (err) {
+		console.error('SQL error fetching content for classification:', err.message);
+		throw new Error(`Error fetching content: ${err.message}`);
+	}
+	if (!row.content || (typeof row.content === 'string' && row.content.trim() === '')) {
+		console.warn('Empty content for classification, deleting job:', jobId);
+		await sql`select pgmq.delete(${QUEUE_NAME}, ${jobId}::bigint)`;
+		return;
+	}
+	// 2) embed content
+	let contentString = typeof row.content === 'string' ? row.content : JSON.stringify(row.content);
+	let contentEmbedding;
+	try {
+		contentEmbedding = await generateEmbedding(contentString);
+	} catch (err) {
+		console.error('Embedding generation failed for classification:', err.message);
+		throw err;
+	}
+	// 3) fetch reference label embeddings from DB
+	let refs;
+	try {
+		refs = await sql`
+			select category, label, embedding, metadata
+			from reference_embeddings
+			where category in ('topic', 'sentiment', 'priority')
+		`;
+	} catch (err) {
+		console.error('Failed to load reference embeddings:', err.message);
+		throw err;
+	}
+	// normalize refs into maps per category
+	const byCategory = { topic: [], sentiment: [], priority: [] };
+	for (const r of refs) {
+		const cat = r.category || r[0];
+		const label = r.label || r[1];
+		const embedding = r.embedding || r[2];
+		const metadata = r.metadata || r[3] || {};
+		if (byCategory[cat]) byCategory[cat].push({ label, embedding, metadata });
+	}
+	// 4) compute top matches
+	const topicMatches = topMatches(byCategory.topic || [], contentEmbedding, 3).filter(m => m.score > 0.55); // tune threshold
+	const sentimentMatch = topMatches(byCategory.sentiment || [], contentEmbedding, 1)[0];
+	const priorityMatch = topMatches(byCategory.priority || [], contentEmbedding, 1)[0];
+	const selectedTopics = topicMatches.map(t => t.label);
+	const selectedSentiment = sentimentMatch ? sentimentMatch.label : null;
+	const selectedPriority = priorityMatch ? priorityMatch.label : null;
+	console.log('Classification result:', { selectedTopics, selectedSentiment, selectedPriority });
+	// 5) retrieve relevant documentation pages (top-k) from documentation_embeddings table
+	let docRows;
+	try {
+		docRows = await sql`select url, title, content, embedding, metadata from documentation_embeddings`;
+	} catch (err) {
+		console.error('Failed to load documentation embeddings:', err.message);
+		docRows = [];
+	}
+	let docCandidates = (docRows || []).map(r => ({
+		url: r.url || r[0],
+		title: r.title || r[1],
+		content: r.content || r[2],
+		embedding: r.embedding || r[3],
+		metadata: r.metadata || r[4]
+	}));
+	const docMatches = topMatches(docCandidates, contentEmbedding, 5).filter(d => d.score > 0.4).slice(0, 5);
+	const references = docMatches.map(d => ({ url: d.url, title: d.title, score: d.score }));
+	// 6) Generate AI response (summarize + include references + classification)
+	const promptParts = [
+		`User content: ${contentString.slice(0, 2000)}`,
+		`Predicted classification:\n  topics: ${selectedTopics.join(', ') || 'none'}\n  sentiment: ${selectedSentiment || 'unknown'}\n  priority: ${selectedPriority || 'unknown'}`,
+		'Relevant documentation (title — url):',
+		...references.map(r => `- ${r.title} — ${r.url}`),
+		'Please provide a concise response to the user, include references and suggested next steps.'
+	];
+	const finalPrompt = promptParts.join('\n\n');
+	let aiResponse = await generateText(finalPrompt);
+	// 7) update target row with classification, ai_response and references, then delete job
+	try {
+		await sql`
+			update ${sql(schema)}.${sql(table)}
+			set
+				topic_tags = ${JSON.stringify(selectedTopics)},
+				sentiment = ${selectedSentiment},
+				ai_priority = ${selectedPriority},
+				ai_response = ${aiResponse},
+				references = ${JSON.stringify(references)}
+			where id = ${id}
+		`;
+		await sql`select pgmq.delete(${QUEUE_NAME}, ${jobId}::bigint)`;
+		console.log('Classification job completed:', jobId);
+	} catch (err) {
+		console.error('Error updating row for classification:', err.message);
+		throw err;
+	}
+}
+
 /**
  * Returns a promise that rejects if the worker is terminating.
  */ function catchUnload() {

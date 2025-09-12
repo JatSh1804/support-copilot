@@ -95,22 +95,13 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient();
-    const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get('page') || '1');
-    const limit = parseInt(searchParams.get('limit') || '10');
-    const status = searchParams.get('status');
-    const offset = (page - 1) * limit;
-
-    // Check if user is authenticated (for admin access)
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    let query = supabase
+    // Fetch all tickets with classification and assignment info
+    const { data: tickets, error } = await supabase
       .from('tickets')
       .select(`
         id,
@@ -127,45 +118,20 @@ export async function GET(request: NextRequest) {
         classification_confidence,
         created_at,
         updated_at,
-        classification_completed_at
+        classification_completed_at,
+        assigned_to,
+        resolved_at
       `)
       .order('created_at', { ascending: false });
 
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query = query.eq('status', status);
-    }
-
-    // Only show classified tickets by default
-    query = query.not('classification_completed_at', 'is', null);
-
-    const { data: tickets, error, count } = await query
-      .range(offset, offset + limit - 1)
-      .limit(limit);
-
     if (error) {
-      console.error('Error fetching tickets:', error);
-      return NextResponse.json(
-        { error: 'Failed to fetch tickets' },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: 'Failed to fetch tickets' }, { status: 500 });
     }
 
-    return NextResponse.json({
-      tickets,
-      pagination: {
-        page,
-        limit,
-        total: count,
-        totalPages: Math.ceil((count || 0) / limit)
-      }
-    });
+    return NextResponse.json({ tickets });
 
   } catch (error) {
     console.error('Unexpected error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
