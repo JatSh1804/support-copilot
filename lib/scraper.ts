@@ -7,6 +7,7 @@ interface ScrapedDocument {
   breadcrumbs: string[];
   section: string;
   lastModified?: string;
+  hyperlinks?: string[];
 }
 
 export class AtlanDocsScraper {
@@ -18,7 +19,7 @@ export class AtlanDocsScraper {
       '/guide/', '/concepts/', '/setup/', '/integrations/', 
       '/getting-started/', '/overview/', '/tutorial/', '/how-to/',
       '/best-practices/', '/glossary/', '/lineage/', '/connector/',
-      '/sso/', '/authentication/', '/api/', '/sdk/'
+      '/sso/', '/authentication/', '/api/', '/sdk/', '/apps/'
     ],
     'developer.atlan.com': [
       '/api/', '/sdk/', '/reference/', '/authentication/',
@@ -31,15 +32,15 @@ export class AtlanDocsScraper {
     '/changelog/', '/release-notes/', '/blog/', '/community/',
     '/download/', '/legal/', '/privacy/', '/terms/', '/support/',
     '/contact/', '/about/', '/careers/', '/pricing/',
-    '.pdf', '.zip', '.jpg', '.png', '.gif', '/images/', '/assets/'
+    '.pdf', '.zip', '.jpg', '.png', '.gif', '/images/', '/assets/', '.xml'
   ];
 
   async scrapeDocumentation(): Promise<ScrapedDocument[]> {
     console.log('🚀 [scraper] Starting Atlan documentation scraping...');
     try {
       const startUrls = [
-        'https://docs.atlan.com/',
-        'https://developer.atlan.com/'
+        'https://docs.atlan.com/apps/connectors/etl-tools/fivetran/how-tos/set-up-fivetran',
+        'https://docs.atlan.com/apps/connectors/data-warehouses/amazon-redshift/how-tos/set-up-amazon-redshift',
       ];
 
       const allUrls = await this.discoverUrls(startUrls);
@@ -72,7 +73,7 @@ export class AtlanDocsScraper {
     // If no sitemap found, do basic recursive discovery
     if (allUrls.size <= startUrls.length) {
       console.log('📍 No sitemap found, using recursive discovery');
-      const discoveredUrls = await this.recursiveUrlDiscovery(startUrls.slice(0, 2)); // Limit for performance
+      const discoveredUrls = await this.recursiveUrlDiscovery(startUrls.slice(0, 2));
       discoveredUrls.forEach(url => allUrls.add(url));
     }
 
@@ -83,9 +84,10 @@ export class AtlanDocsScraper {
   private async findSitemapUrls(baseUrl: string): Promise<string[]> {
     console.log(`[scraper] Looking for sitemaps at ${baseUrl}`);
     const sitemapUrls: string[] = [];
+    const domain = new URL(baseUrl).origin;
     const potentialSitemaps = [
-      `${baseUrl}/sitemap.xml`,
-      `${baseUrl}/sitemap_index.xml`
+      `${domain}/sitemap.xml`,
+      `${domain}/sitemap_index.xml`
     ];
 
     for (const sitemapUrl of potentialSitemaps) {
@@ -113,7 +115,6 @@ export class AtlanDocsScraper {
   private parseSitemapUrls(xmlContent: string): string[] {
     const urls: string[] = [];
     
-    // Simple regex to extract URLs from sitemap XML
     const urlMatches = xmlContent.match(/<loc>(.*?)<\/loc>/g);
     
     if (urlMatches) {
@@ -133,10 +134,10 @@ export class AtlanDocsScraper {
     const discovered = new Set<string>();
     const toVisit = [...startUrls];
     let depth = 0;
-    const maxDepth = 2; // Reduced for Vercel timeout limits
+    const maxDepth = 3; // Increased depth to find more pages
 
-    while (toVisit.length > 0 && depth < maxDepth) {
-      const currentBatch = toVisit.splice(0, 10); // Smaller batches
+    while (toVisit.length > 0 && depth < maxDepth && discovered.size < this.maxPages) {
+      const currentBatch = toVisit.splice(0, 8);
       
       for (const url of currentBatch) {
         if (discovered.has(url)) continue;
@@ -144,7 +145,7 @@ export class AtlanDocsScraper {
         try {
           const links = await this.extractLinksFromPage(url);
           links.forEach(link => {
-            if (this.isValidDocUrl(link) && !discovered.has(link)) {
+            if (this.isValidDocUrl(link) && !discovered.has(link) && discovered.size < this.maxPages) {
               discovered.add(link);
               if (depth < maxDepth - 1) {
                 toVisit.push(link);
@@ -157,8 +158,7 @@ export class AtlanDocsScraper {
           console.log(`⚠️ Failed to discover links from ${url}`);
         }
         
-        // Rate limiting
-        await this.sleep(300);
+        await this.sleep(200);
       }
       
       depth++;
@@ -180,29 +180,104 @@ export class AtlanDocsScraper {
       if (!response.ok) return [];
 
       const html = await response.text();
-      const links: string[] = [];
-      
-      // Simple regex to extract href attributes
-      const hrefMatches = html.match(/href=["'](.*?)["']/gi);
-      
-      if (hrefMatches) {
-        for (const match of hrefMatches) {
-          const href = match.replace(/href=["']|["']/g, '');
-          try {
-            const absoluteUrl = new URL(href, url).href;
-            if (this.isValidDocUrl(absoluteUrl)) {
-              links.push(absoluteUrl);
-            }
-          } catch {
-            // Invalid URL, skip
-          }
-        }
-      }
-
-      return links;
+      return this.extractHyperlinksFromHTML(html, url);
     } catch (error) {
       console.log(`Failed to extract links from ${url}:`, error.message);
       return [];
+    }
+  }
+
+  /**
+   * Enhanced hyperlink extraction that handles Next.js dynamic links properly
+   */
+  private extractHyperlinksFromHTML(html: string, currentUrl: string): string[] {
+    const links: string[] = [];
+    const currentUrlObj = new URL(currentUrl);
+    
+    // Multiple patterns to catch different href formats
+    const hrefPatterns = [
+      /href\s*=\s*["']([^"']+)["']/gi,      // Standard href
+      /to\s*=\s*["']([^"']+)["']/gi,        // Next.js Link component 'to' prop
+      /pathname\s*=\s*["']([^"']+)["']/gi   // pathname in Link components
+    ];
+
+    for (const pattern of hrefPatterns) {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        const href = match[1].trim();
+        const absoluteUrl = this.resolveUrl(href, currentUrlObj);
+        
+        if (absoluteUrl && this.isValidDocUrl(absoluteUrl)) {
+          links.push(absoluteUrl);
+        }
+      }
+    }
+
+    // Also look for data attributes that might contain URLs (common in SPAs)
+    const dataHrefMatches = html.match(/data-href\s*=\s*["']([^"']+)["']/gi);
+    if (dataHrefMatches) {
+      for (const match of dataHrefMatches) {
+        const hrefMatch = match.match(/data-href\s*=\s*["']([^"']+)["']/i);
+        if (hrefMatch && hrefMatch[1]) {
+          const absoluteUrl = this.resolveUrl(hrefMatch[1], currentUrlObj);
+          if (absoluteUrl && this.isValidDocUrl(absoluteUrl)) {
+            links.push(absoluteUrl);
+          }
+        }
+      }
+    }
+
+    // Remove duplicates
+    return [...new Set(links)];
+  }
+
+  /**
+   * Improved URL resolution that handles various formats
+   */
+  private resolveUrl(href: string, baseUrl: URL): string | null {
+    try {
+      // Skip empty hrefs and anchors
+      if (!href || href.startsWith('#') || href === '/') {
+        return null;
+      }
+
+      // Handle mailto, tel, javascript: etc.
+      if (href.match(/^(mailto:|tel:|javascript:|data:)/i)) {
+        return null;
+      }
+
+      let resolvedUrl: URL;
+
+      // Absolute URL
+      if (href.match(/^https?:\/\//i)) {
+        resolvedUrl = new URL(href);
+      }
+      // Protocol-relative URL
+      else if (href.startsWith('//')) {
+        resolvedUrl = new URL(`${baseUrl.protocol}${href}`);
+      }
+      // Root-relative URL (starts with /)
+      else if (href.startsWith('/')) {
+        resolvedUrl = new URL(href, `${baseUrl.protocol}//${baseUrl.host}`);
+      }
+      // Relative URL
+      else {
+        resolvedUrl = new URL(href, baseUrl.href);
+      }
+
+      // Clean up the URL
+      resolvedUrl.hash = ''; // Remove hash
+      
+      // Remove trailing slash for consistency (except for root)
+      let cleanUrl = resolvedUrl.href;
+      if (cleanUrl.endsWith('/') && resolvedUrl.pathname !== '/') {
+        cleanUrl = cleanUrl.slice(0, -1);
+      }
+
+      return cleanUrl;
+    } catch (error) {
+      console.log(`Failed to resolve URL: ${href} with base ${baseUrl.href}`);
+      return null;
     }
   }
 
@@ -241,7 +316,6 @@ export class AtlanDocsScraper {
     const results: ScrapedDocument[] = [];
     const prioritizedUrls = this.prioritizeUrls(urls);
     
-    // Process in batches to avoid timeout
     const batchSize = 5;
     for (let i = 0; i < Math.min(prioritizedUrls.length, this.maxPages); i += batchSize) {
       const batch = prioritizedUrls.slice(i, i + batchSize);
@@ -267,7 +341,6 @@ export class AtlanDocsScraper {
       const validResults = batchResults.filter(Boolean) as ScrapedDocument[];
       results.push(...validResults);
       
-      // Rate limiting between batches
       await this.sleep(1000);
     }
 
@@ -279,7 +352,7 @@ export class AtlanDocsScraper {
     return urls.sort((a, b) => {
       const scoreA = this.calculateUrlPriority(a);
       const scoreB = this.calculateUrlPriority(b);
-      return scoreB - scoreA; // Higher score first
+      return scoreB - scoreA;
     });
   }
 
@@ -287,15 +360,14 @@ export class AtlanDocsScraper {
     const path = new URL(url).pathname.toLowerCase();
     let score = 0;
     
-    // High priority keywords
     const highPriorityKeywords = [
-      'getting-started', 'overview', 'introduction', 'quickstart',
-      'api', 'sdk', 'authentication', 'guide', 'tutorial'
+      'getting-started', 'overview', 'introduction', 'quickstart', 'quick-start',
+      'api', 'sdk', 'authentication', 'guide', 'tutorial', 'set-up', 'setup'
     ];
     
     const mediumPriorityKeywords = [
-      'how-to', 'best-practices', 'concepts', 'setup', 
-      'integration', 'connector', 'lineage', 'glossary'
+      'how-to', 'how-tos', 'best-practices', 'concepts', 
+      'integration', 'connector', 'lineage', 'glossary', 'apps'
     ];
 
     if (highPriorityKeywords.some(keyword => path.includes(keyword))) {
@@ -306,11 +378,9 @@ export class AtlanDocsScraper {
       score += 5;
     }
     
-    // Prefer shorter paths
     const pathDepth = path.split('/').length;
     score += Math.max(0, 10 - pathDepth);
     
-    // Root pages get higher priority
     if (path === '/' || path === '/index.html') {
       score += 15;
     }
@@ -333,8 +403,6 @@ export class AtlanDocsScraper {
       }
 
       const html = await response.text();
-      
-      // Simple HTML parsing without external libraries
       const content = this.extractContentFromHTML(html, url);
       
       return content;
@@ -381,6 +449,9 @@ export class AtlanDocsScraper {
       });
     }
 
+    // Use the enhanced hyperlink extraction
+    const hyperlinks = this.extractHyperlinksFromHTML(html, url);
+
     // Extract main content (remove HTML tags)
     let textContent = cleanHtml.replace(/<[^>]*>/g, ' ');
     textContent = textContent
@@ -394,35 +465,38 @@ export class AtlanDocsScraper {
       content: textContent,
       headings,
       breadcrumbs,
-      section: breadcrumbs.length > 1 ? breadcrumbs[breadcrumbs.length - 2] : ''
+      section: breadcrumbs.length > 1 ? breadcrumbs[breadcrumbs.length - 2] : '',
+      hyperlinks
     };
   }
 
   private isValueableContent(content: ScrapedDocument): boolean {
     const minContentLength = 200;
     const title = content.title.toLowerCase();
-    
+
     // Skip error pages
-    if (title.includes('404') || 
-        title.includes('error') || 
-        title.includes('not found') ||
-        content.content.length < minContentLength) {
+    if (
+      title.includes('404') ||
+      title.includes('error') ||
+      title.includes('not found') ||
+      content.content.length < minContentLength
+    ) {
       return false;
     }
 
     // Skip pages that are mostly navigation
     const contentWords = content.content.split(/\s+/).length;
     const headingWords = content.headings.join(' ').split(/\s+/).length;
-    
-    if (headingWords > contentWords * 0.3) {
+
+    if (contentWords > 0 && headingWords / contentWords > 0.3) {
+      // If there are enough hyperlinks, keep the page anyway
+      if (content.hyperlinks && content.hyperlinks.length >= 5 && content.content.length > minContentLength / 2) {
+        return true;
+      }
       return false;
     }
 
-    const isValuable = true; // /* ...existing logic... */;
-    if (!isValuable) {
-      console.log(`[scraper] Skipped low-value page: ${content.title}`);
-    }
-    return isValuable;
+    return true;
   }
 
   private sleep(ms: number): Promise<void> {

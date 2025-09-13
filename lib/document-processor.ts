@@ -1,9 +1,10 @@
 // lib/document-processor.ts
 import { createClient } from '@supabase/supabase-js';
+import { createHash } from 'crypto';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  process.env.SERVICE_ROLE_KEY!
 );
 
 // const openai = new OpenAI({
@@ -185,19 +186,7 @@ export class DocumentProcessor {
   }
 
   private generateContentHash(content: string): string {
-    // Use Web Crypto API for browser/Next.js compatibility
-    if (typeof window !== 'undefined' && window.crypto) {
-      // Browser/Web Crypto
-      const encoder = new TextEncoder();
-      const data = encoder.encode(content);
-      return window.crypto.subtle.digest('SHA-256', data).then((hashBuffer) => {
-        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-      });
-    } else {
-      // Node.js fallback (if needed)
-      const { createHash } = require('crypto');
-      return createHash('sha256').update(content).digest('hex');
-    }
+    return createHash('md5').update(content).digest('hex');
   }
 
   private sleep(ms: number): Promise<void> {

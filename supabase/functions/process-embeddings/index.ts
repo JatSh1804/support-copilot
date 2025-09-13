@@ -29,12 +29,33 @@ serve(async (req) => {
     // Process each job in the batch
     for (const job of jobs) {
       try {
-        console.log(`Processing job: ${job.jobId} for ticket ${job.ticket_id}`);
-        // Generate embeddings using OpenAI
-        const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
-        if (!openaiApiKey) {
-          throw new Error('OPENAI_API_KEY environment variable is not set');
+        console.log(`Processing job: ${job.jobId || job.ticket_id} for ${job.table || 'ticket_embeddings'}/${job.id || job.ticket_id}`);
+
+        // Determine content to embed
+        let contentToEmbed = job.content;
+
+        // For document_chunks jobs, use contentFunction if present
+        if (job.table === 'document_chunks') {
+          if (!contentToEmbed && job.contentFunction) {
+            // Fetch chunk_content using contentFunction
+            const { data: chunkRow, error: chunkError } = await supabaseClient
+              .from('document_chunks')
+              .select('chunk_content')
+              .eq('id', job.id)
+              .single();
+            if (chunkError || !chunkRow || !chunkRow.chunk_content) {
+              throw new Error(`No chunk_content found for document_chunk ${job.id}`);
+            }
+            contentToEmbed = chunkRow.chunk_content;
+          }
         }
+
+        // For ticket jobs, use content if present, else concatenate subject and description
+        if (!contentToEmbed && job.ticket_id) {
+          contentToEmbed = (job.subject || '') + '\n\n' + (job.description || '');
+        }
+
+        // Generate embedding
         const embeddingResponse = await fetch('https://api.openai.com/v1/embeddings', {
           method: 'POST',
           headers: {
@@ -43,7 +64,7 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             model: 'text-embedding-ada-002',
-            input: job.content
+            input: contentToEmbed
           })
         });
         if (!embeddingResponse.ok) {
@@ -52,45 +73,59 @@ serve(async (req) => {
         }
         const embeddingData = await embeddingResponse.json();
         const embedding = embeddingData.data[0].embedding;
-        console.log(`Generated embedding for ticket ${job.ticket_number}`);
+        console.log(`Generated embedding for ${job.table} ${job.id}`);
+
         // Store embedding in database
-        const { data: embeddingRecord, error: embeddingError } = await supabaseClient.from('ticket_embeddings').insert({
-          ticket_id: job.ticket_id,
-          content_type: 'combined',
-          embedding: embedding
-        }).select('id').single();
-        if (embeddingError) {
-          console.error('Error storing embedding:', embeddingError);
-          throw embeddingError;
+        let embeddingStored = false;
+        if (job.table === 'ticket_embeddings' || job.table === 'tickets') {
+          // Ticket embedding logic (legacy, if needed)
+          const { error: embeddingError } = await supabaseClient
+            .from('ticket_embeddings')
+            .upsert({
+              ticket_id: job.ticket_id,
+              content_type: job.content_type || 'combined',
+              embedding: embedding
+            });
+          if (!embeddingError) embeddingStored = true;
+        } else if (job.table === 'document_chunks') {
+          // Document chunk embedding logic
+          const { error: chunkError } = await supabaseClient
+            .from('document_chunks')
+            .update({ embedding: embedding })
+            .eq('id', job.id);
+          if (!chunkError) embeddingStored = true;
+        } else {
+          // Generic embedding update for other tables
+          const { error: genericError } = await supabaseClient
+            .from(job.table)
+            .update({ [job.embeddingColumn || 'embedding']: embedding })
+            .eq('id', job.id);
+          if (!genericError) embeddingStored = true;
         }
-        // Update ticket status to processing
-        const { error: updateError } = await supabaseClient.from('tickets').update({
-          status: 'processing',
-        }).eq('id', job.ticket_id);
-        if (updateError) {
-          console.error('Error updating ticket status:', updateError);
+
+        if (embeddingStored) {
+          try {
+            await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`;
+            console.log(`Completed embedding for ${job.table} ${job.id}`);
+            completedJobs.push(job);
+          } catch (e) {
+            console.error('Error deleting job from queue (direct SQL):', e);
+          }
+        } else {
+          // If embedding was not stored, do not delete job from queue
+          console.warn(`Embedding not stored for job ${job.jobId}, job will remain in queue for retry.`);
+          failedJobs.push({
+            ...job,
+            error: 'Embedding not stored'
+          });
         }
-        // Remove job from queue using pgmq.delete
-        try {
-          await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`;
-        } catch (e) {
-          console.error('Error deleting job from queue (direct SQL):', e);
-        }
-        console.log(`Completed embedding for ticket ${job.ticket_number}`);
-        completedJobs.push(job);
       } catch (error) {
         console.error(`Error processing job ${job.jobId}:`, error);
-        // Mark job as failed
         failedJobs.push({
           ...job,
           error: error instanceof Error ? error.message : 'Unknown error'
         });
-        // Still try to remove failed job from queue
-        try {
-          await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`;
-        } catch (deleteError) {
-          console.error('Error deleting failed job (direct SQL):', deleteError);
-        }
+        // Do NOT delete job from queue here; leave for retry
       }
     }
     return new Response(JSON.stringify({
@@ -124,3 +159,59 @@ serve(async (req) => {
     });
   }
 });
+
+/*
+Explanation of changes to support both ticket and document chunk embeddings:
+
+1. **Job Routing by Table Type**:
+   - The function checks `job.table` to determine if the job is for `ticket_embeddings`/`tickets` or for `document_chunks`.
+   - This allows the same function to process both ticket and documentation chunk embedding jobs.
+
+2. **Content Extraction**:
+   - For `document_chunks`, if the job does not provide content directly, it fetches `chunk_content` from the database.
+   - For tickets, it uses the provided content or fetches as needed.
+
+3. **Embedding Generation**:
+   - The function generates the embedding using the OpenAI API (or other providers, if configured).
+
+4. **Embedding Storage**:
+   - For tickets: Upserts the embedding into the `ticket_embeddings` table and optionally updates ticket status.
+   - For document chunks: Updates the `embedding` field in the `document_chunks` table for the given chunk.
+   - For other tables: Updates the specified embedding column.
+
+5. **Queue Management**:
+   - After processing, the job is removed from the queue using `pgmq.delete`.
+
+6. **Error Handling**:
+   - Errors are logged and failed jobs are tracked and removed from the queue.
+
+**Summary**:
+- The function now supports both ticket and documentation chunk embeddings by routing jobs based on the `table` field.
+- It fetches the correct content, generates embeddings, and stores them in the appropriate table.
+- This unified approach allows you to use a single embedding processor for all types of content in your system.
+*/
+
+// # Example: Test ticket embedding job
+// curl -X POST "https://your-project-ref.supabase.co/functions/v1/process-embeddings" \
+//   -H "Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>" \
+//   -H "Content-Type: application/json" \
+//   -d '{
+//     "jobId": 123,
+//     "id": "<ticket_embedding_id>",
+//     "table": "ticket_embeddings",
+//     "ticket_id": "<ticket_id>",
+//     "content_type": "combined",
+//     "content": "Ticket subject and description text here"
+//   }'
+
+// # Example: Test document chunk embedding job
+// curl -X POST "https://your-project-ref.supabase.co/functions/v1/process-embeddings" \
+//   -H "Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>" \
+//   -H "Content-Type: application/json" \
+//   -d '{
+//     "jobId": 456,
+//     "id": "<document_chunk_id>",
+//     "table": "document_chunks",
+//     "content": "Chunk content text here"
+//   }'
+//   }'

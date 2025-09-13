@@ -35,7 +35,17 @@ ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
 CREATE OR REPLACE FUNCTION get_chunk_content(chunk_row document_chunks)
 RETURNS TEXT AS $$
 BEGIN
-  RETURN chunk_row.chunk_content;
+  -- Return chunk_content if present, else fetch from DB
+  IF chunk_row.chunk_content IS NOT NULL AND LENGTH(TRIM(chunk_row.chunk_content)) > 0 THEN
+    RETURN chunk_row.chunk_content;
+  ELSE
+    RETURN (
+      SELECT chunk_content
+      FROM document_chunks
+      WHERE id = chunk_row.id
+      LIMIT 1
+    );
+  END IF;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -62,3 +72,37 @@ CREATE TRIGGER trigger_queue_chunk_embedding
   AFTER INSERT ON document_chunks
   FOR EACH ROW
   EXECUTE FUNCTION queue_chunk_for_embedding();
+
+-- Example: Test get_chunk_content function directly in SQL
+
+-- Replace '2e8b7ee5-7934-4127-9e3a-44be4e573b14' with your actual chunk id
+SELECT get_chunk_content(dc)
+FROM document_chunks dc
+WHERE dc.id = '2e8b7ee5-7934-4127-9e3a-44be4e573b14';
+
+-- Or test with a constructed row:
+SELECT get_chunk_content(ROW(
+  '2e8b7ee5-7934-4127-9e3a-44be4e573b14', -- id
+  NULL, -- document_id
+  'Sample chunk content', -- chunk_content
+  NULL, -- embedding
+  NULL, -- chunk_index
+  NULL, -- section_heading
+  NULL, -- source_url
+  NOW(), -- created_at
+  '{}'::jsonb -- metadata
+)::document_chunks);
+
+-- Postpone last 1050 jobs in the embeddings_queue by updating their visible_at timestamp
+
+-- Example: Set visible_at to 7 days in the future for last 1050 jobs (by msg_id descending)
+UPDATE pgmq.embeddings_queue
+SET visible_at = NOW() + INTERVAL '7 days'
+WHERE msg_id IN (
+  SELECT msg_id
+  FROM pgmq.embeddings_queue
+  ORDER BY msg_id DESC
+  LIMIT 1050
+);
+
+-- Now only the first 50 jobs will be visible for processing.

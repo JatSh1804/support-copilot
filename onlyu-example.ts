@@ -403,6 +403,11 @@ Deno.serve(async (req)=>{
   }
 }
 
+// If you have any code like:
+// if (embedding.length !== 768) {
+//   throw new Error('Embedding must be 768 dimensions');
+// }
+
 /**
  * Helper: compute cosine similarity between two numeric arrays
  */

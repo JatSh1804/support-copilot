@@ -368,7 +368,7 @@ CREATE INDEX idx_documents_url ON documents(url);
 
 -- RPC to find top N documentation chunks by embedding similarity (accepts ticket_id)
 CREATE OR REPLACE FUNCTION match_documents(
-  ticket_id uuid,
+  p_ticket_id uuid,
   match_count int DEFAULT 5
 )
 RETURNS TABLE (
@@ -389,11 +389,11 @@ BEGIN
   -- Get embedding for the given ticket_id
   SELECT te.embedding INTO query_embedding
   FROM ticket_embeddings te
-  WHERE te.ticket_id = match_documents.ticket_id AND te.content_type = 'combined'
+  WHERE te.ticket_id = p_ticket_id AND te.content_type = 'combined'
   LIMIT 1;
 
   IF query_embedding IS NULL THEN
-    RAISE EXCEPTION 'No embedding found for ticket %', ticket_id;
+    RAISE EXCEPTION 'No embedding found for ticket %', p_ticket_id;
   END IF;
 
   RETURN QUERY

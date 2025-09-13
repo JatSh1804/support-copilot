@@ -63,7 +63,7 @@ serve(async (req: Request) => {
           .rpc('match_tickets', {
             input_ticket_id: job.ticket_id,
             match_threshold: 0.7,
-            match_count: 5
+            match_count: 3
           });
 
         if (similarError) {
@@ -72,10 +72,33 @@ serve(async (req: Request) => {
           console.log(`[classification] Job ${job.jobId}: Found ${similarTickets?.length ?? 0} similar tickets`);
         }
 
+        // Find top N relevant documentation pages by embedding similarity
+        const { data: docMatches, error: docError } = await supabaseClient
+          .rpc('match_documents', {
+            p_ticket_id: job.ticket_id,
+            match_count: 5
+          });
+
+        if (docError) {
+          console.warn(`[classification] Job ${job.jobId}: Error getting documentation matches`, docError);
+        } else {
+          console.log(`[classification] Job ${job.jobId}: Found ${docMatches?.length ?? 0} documentation matches`);
+        }
+
         // Prepare context from similar tickets
-        const context = similarTickets?.map((t: any) =>
+        const similarTicketsContext = similarTickets?.map((t: any) =>
           `Ticket: ${t.subject}\nResolution: ${t.resolution || 'No resolution available'}`
         ).join('\n\n') || 'No similar tickets found';
+
+        // Prepare context from top 2 documentation sources (use chunk_content)
+        let docsContext = '';
+        if (Array.isArray(docMatches) && docMatches.length > 0) {
+          docsContext = docMatches.slice(0, 2).map((doc: any, idx: number) =>
+            `Doc${idx + 1}: ${doc.title}\nURL: ${doc.url}\nSection: ${doc.section_heading || ''}\nContent: ${doc.chunk_content?.slice(0, 800) || ''}`
+          ).join('\n\n');
+        } else {
+          docsContext = 'No relevant documentation found.';
+        }
 
         // AI Classification using OpenAI
         const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
@@ -97,7 +120,10 @@ Sentiment: ${classificationData.sentiment}
 Priority: ${classificationData.priority}
 
 SIMILAR RESOLVED TICKETS:
-${context}
+${similarTicketsContext}
+
+RELEVANT DOCUMENTATION CONTEXT:
+${docsContext}
 
 Please provide:
 1. AI-generated response to customer
@@ -168,41 +194,6 @@ Format as JSON:
         }
         console.log(`[classification] Job ${job.jobId}: Ticket updated`);
 
-        // Get ticket embedding for document similarity search
-        const { data: ticketEmbeddingRow, error: ticketEmbeddingError } = await supabaseClient
-          .from('ticket_embeddings')
-          .select('embedding')
-          .eq('ticket_id', job.ticket_id)
-          .eq('content_type', 'combined')
-          .single();
-
-        if (ticketEmbeddingError || !ticketEmbeddingRow) {
-          console.error(`[classification] Job ${job.jobId}: No embedding found for ticket`, ticketEmbeddingError);
-          throw new Error(`No embedding found for ticket ${job.ticket_id}`);
-        }
-
-        // Find top N relevant documentation pages by embedding similarity
-        const { data: docMatches, error: docError } = await supabaseClient
-          .rpc('match_documents', {
-            ticket_id: job.ticket_id,
-            match_count: 5
-          });
-
-        if (docError) {
-          console.warn(`[classification] Job ${job.jobId}: Error getting documentation matches`, docError);
-        } else {
-          console.log(`[classification] Job ${job.jobId}: Found ${docMatches?.length ?? 0} documentation matches`);
-        }
-
-        const sources = Array.isArray(docMatches)
-          ? docMatches.map((doc: any) => ({
-              title: doc.title,
-              url: doc.url,
-              snippet: doc.snippet || doc.content?.slice(0, 120) || '',
-              similarity: doc.similarity
-            }))
-          : [];
-
         // Store AI response
         const { error: aiResponseError } = await supabaseClient
           .from('ai_responses')
@@ -210,7 +201,14 @@ Format as JSON:
             ticket_id: job.ticket_id,
             generated_response: aiResponse,
             confidence_score: classificationData.scores?.confidence ?? null,
-            sources: sources
+            sources: Array.isArray(docMatches)
+              ? docMatches.map((doc: any) => ({
+                  title: doc.title,
+                  url: doc.url,
+                  snippet: doc.snippet || doc.content?.slice(0, 120) || '',
+                  similarity: doc.similarity
+                }))
+              : []
           });
 
         if (aiResponseError) {
