@@ -21,23 +21,17 @@ serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    console.log('Starting classification processing...')
+    console.log('[classification] Start batch');
+    const requestBody = await req.json();
+    console.log(`[classification] Received jobs: ${Array.isArray(requestBody) ? requestBody.length : 1}`);
 
-    // Get the request body containing batch of jobs
-    const requestBody = await req.json()
-    console.log("Received request body:", JSON.stringify(requestBody))
+    const jobs = Array.isArray(requestBody) ? requestBody : [requestBody];
+    const completedJobs: any[] = [];
+    const failedJobs: any[] = [];
 
-    // Handle both single job and batch processing
-    const jobs = Array.isArray(requestBody) ? requestBody : [requestBody]
-    console.log(`Processing ${jobs.length} classification jobs`)
-
-    const completedJobs: any[] = []
-    const failedJobs: any[] = []
-
-    // Process each job in the batch
     for (const job of jobs) {
       try {
-        console.log(`Processing job: ${job.jobId} for ticket ${job.ticket_id}`)
+        console.log(`[classification] Job ${job.jobId}: ticket_id=${job.ticket_id}`);
 
         // Get ticket data for classification
         const { data: ticket, error: ticketError } = await supabaseClient
@@ -47,20 +41,24 @@ serve(async (req: Request) => {
           .single();
 
         if (ticketError || !ticket) {
+          console.error(`[classification] Job ${job.jobId}: Ticket not found (${job.ticket_id})`, ticketError);
           throw new Error(`Ticket not found: ${job.ticket_id}`);
         }
+        console.log(`[classification] Job ${job.jobId}: Ticket subject="${ticket.subject}"`);
 
-        // Call RPC to classify ticket using pgvector similarity
+        // Call RPC to classify ticket
         const { data: classificationData, error: classificationError } = await supabaseClient
           .rpc('classify_ticket_by_embedding', {
-            input_ticket_id: job.ticket_id // <-- use correct parameter name
+            input_ticket_id: job.ticket_id
           });
 
         if (classificationError || !classificationData) {
-          throw new Error('Error classifying ticket via embedding RPC:', classificationError);
+          console.error(`[classification] Job ${job.jobId}: classify_ticket_by_embedding error`, classificationError);
+          throw new Error('Error classifying ticket via embedding RPC');
         }
+        console.log(`[classification] Job ${job.jobId}: Classification result`, JSON.stringify(classificationData));
 
-        // Get similar tickets for RAG context using ticket_id directly
+        // Get similar tickets for RAG context
         const { data: similarTickets, error: similarError } = await supabaseClient
           .rpc('match_tickets', {
             input_ticket_id: job.ticket_id,
@@ -69,7 +67,9 @@ serve(async (req: Request) => {
           });
 
         if (similarError) {
-          console.warn('Error getting similar tickets:', similarError);
+          console.warn(`[classification] Job ${job.jobId}: match_tickets error`, similarError);
+        } else {
+          console.log(`[classification] Job ${job.jobId}: Found ${similarTickets?.length ?? 0} similar tickets`);
         }
 
         // Prepare context from similar tickets
@@ -77,10 +77,11 @@ serve(async (req: Request) => {
           `Ticket: ${t.subject}\nResolution: ${t.resolution || 'No resolution available'}`
         ).join('\n\n') || 'No similar tickets found';
 
-        // AI Classification using OpenAI (for response only)
-        const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
+        // AI Classification using OpenAI
+        const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
         if (!openaiApiKey) {
-          throw new Error('OPENAI_API_KEY environment variable is not set')
+          console.error(`[classification] Job ${job.jobId}: OPENAI_API_KEY not set`);
+          throw new Error('OPENAI_API_KEY environment variable is not set');
         }
 
         const classificationPrompt = `
@@ -105,7 +106,7 @@ Format as JSON:
 {
   "ai_response": "Your response here"
 }
-`
+`;
 
         const classificationResponse = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
@@ -128,22 +129,23 @@ Format as JSON:
             temperature: 0.3,
             max_tokens: 1000
           }),
-        })
+        });
 
         if (!classificationResponse.ok) {
-          const errorText = await classificationResponse.text()
-          throw new Error(`OpenAI API error: ${classificationResponse.status} - ${errorText}`)
+          const errorText = await classificationResponse.text();
+          console.error(`[classification] Job ${job.jobId}: OpenAI API error`, errorText);
+          throw new Error(`OpenAI API error: ${classificationResponse.status} - ${errorText}`);
         }
 
         const classificationResultData = await classificationResponse.json();
         let aiResponse;
         try {
-          // Sanitize control characters and parse
           const rawContent = classificationResultData.choices[0].message.content;
           const sanitizedContent = rawContent.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
           aiResponse = JSON.parse(sanitizedContent).ai_response;
+          console.log(`[classification] Job ${job.jobId}: AI response parsed`);
         } catch (err) {
-          console.error("Error parsing AI response JSON:", err, classificationResultData.choices[0].message.content);
+          console.error(`[classification] Job ${job.jobId}: Error parsing AI response JSON`, err, classificationResultData.choices[0].message.content);
           throw new Error("Failed to parse AI response JSON");
         }
 
@@ -158,12 +160,48 @@ Format as JSON:
             status: 'classified',
             classification_completed_at: new Date().toISOString()
           })
-          .eq('id', job.ticket_id)
+          .eq('id', job.ticket_id);
 
         if (updateError) {
-          console.error('Error updating ticket classification:', updateError)
-          throw updateError
+          console.error(`[classification] Job ${job.jobId}: Error updating ticket classification`, updateError);
+          throw updateError;
         }
+        console.log(`[classification] Job ${job.jobId}: Ticket updated`);
+
+        // Get ticket embedding for document similarity search
+        const { data: ticketEmbeddingRow, error: ticketEmbeddingError } = await supabaseClient
+          .from('ticket_embeddings')
+          .select('embedding')
+          .eq('ticket_id', job.ticket_id)
+          .eq('content_type', 'combined')
+          .single();
+
+        if (ticketEmbeddingError || !ticketEmbeddingRow) {
+          console.error(`[classification] Job ${job.jobId}: No embedding found for ticket`, ticketEmbeddingError);
+          throw new Error(`No embedding found for ticket ${job.ticket_id}`);
+        }
+
+        // Find top N relevant documentation pages by embedding similarity
+        const { data: docMatches, error: docError } = await supabaseClient
+          .rpc('match_documents', {
+            ticket_id: job.ticket_id,
+            match_count: 5
+          });
+
+        if (docError) {
+          console.warn(`[classification] Job ${job.jobId}: Error getting documentation matches`, docError);
+        } else {
+          console.log(`[classification] Job ${job.jobId}: Found ${docMatches?.length ?? 0} documentation matches`);
+        }
+
+        const sources = Array.isArray(docMatches)
+          ? docMatches.map((doc: any) => ({
+              title: doc.title,
+              url: doc.url,
+              snippet: doc.snippet || doc.content?.slice(0, 120) || '',
+              similarity: doc.similarity
+            }))
+          : [];
 
         // Store AI response
         const { error: aiResponseError } = await supabaseClient
@@ -172,58 +210,62 @@ Format as JSON:
             ticket_id: job.ticket_id,
             generated_response: aiResponse,
             confidence_score: classificationData.scores?.confidence ?? null,
-            sources: similarTickets?.map((t: any) => ({
-              title: t.subject,
-              content: t.resolution || 'No resolution available',
-              similarity: t.similarity
-            })) || []
-          })
+            sources: sources
+          });
 
         if (aiResponseError) {
-          console.error('Error storing AI response:', aiResponseError)
+          console.error(`[classification] Job ${job.jobId}: Error storing AI response`, aiResponseError);
+        } else {
+          console.log(`[classification] Job ${job.jobId}: AI response stored`);
         }
 
         // Store similar tickets in ticket_similarities table
         if (Array.isArray(similarTickets)) {
           for (const sim of similarTickets) {
-            await supabaseClient
-              .from('ticket_similarities')
-              .upsert({
-                ticket_id: job.ticket_id,
-                similar_ticket_id: sim.ticket_id,
-                similarity_score: sim.similarity
-              }, { onConflict: ['ticket_id', 'similar_ticket_id'] });
+            try {
+              await supabaseClient
+                .from('ticket_similarities')
+                .upsert({
+                  ticket_id: job.ticket_id,
+                  similar_ticket_id: sim.ticket_id,
+                  similarity_score: sim.similarity
+                }, { onConflict: ['ticket_id', 'similar_ticket_id'] });
+              console.log(`[classification] Job ${job.jobId}: Similar ticket stored (${sim.ticket_id})`);
+            } catch (simError) {
+              console.error(`[classification] Job ${job.jobId}: Error storing similar ticket (${sim.ticket_id})`, simError);
+            }
           }
         }
 
         // Remove job from queue using safe function
         try {
           await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`
+          console.log(`[classification] Job ${job.jobId}: Removed from queue`);
         } catch (deleteError) {
-          console.error('Error deleting job from queue (direct SQL):', deleteError)
+          console.error(`[classification] Job ${job.jobId}: Error deleting job from queue`, deleteError);
         }
 
-        console.log(`Completed classification for ticket ${job.ticket_number}`)
-        completedJobs.push(job)
+        console.log(`[classification] Job ${job.jobId}: Completed`);
+        completedJobs.push(job);
 
       } catch (error) {
-        console.error(`Error processing job ${job.jobId}:`, error)
+        console.error(`[classification] Job ${job.jobId}: Error processing job`, error);
 
-        // Mark job as failed
         failedJobs.push({
           ...job,
           error: error instanceof Error ? error.message : 'Unknown error'
-        })
+        });
 
-        // Still try to remove failed job from queue
         try {
           await sql`select pgmq.delete(${QUEUE_NAME}, ${job.jobId}::bigint)`
+          console.log(`[classification] Job ${job.jobId}: Removed failed job from queue`);
         } catch (deleteError) {
-          console.error('Error deleting failed job (direct SQL):', deleteError)
+          console.error(`[classification] Job ${job.jobId}: Error deleting failed job from queue`, deleteError);
         }
       }
     }
 
+    console.log(`[classification] Batch complete: ${completedJobs.length} completed, ${failedJobs.length} failed`);
     return new Response(
       JSON.stringify({
         message: `Processed ${jobs.length} classification jobs`,
@@ -246,7 +288,7 @@ Format as JSON:
     )
 
   } catch (error) {
-    console.error('Unexpected error:', error)
+    console.error('[classification] Unexpected error:', error)
     return new Response(
       JSON.stringify({
         error: error instanceof Error ? error.message : 'Unknown error',

@@ -351,6 +351,69 @@ CREATE TABLE ticket_similarities (
 CREATE INDEX idx_ticket_similarities_ticket_id ON ticket_similarities(ticket_id);
 CREATE INDEX idx_ticket_similarities_similar_ticket_id ON ticket_similarities(similar_ticket_id);
 
+-- Table to store Atlan developer documentation embeddings and metadata
+CREATE TABLE documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(1536) NOT NULL,
+    tags TEXT[],
+    last_scraped_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX idx_documents_url ON documents(url);
+
+-- RPC to find top N documentation chunks by embedding similarity (accepts ticket_id)
+CREATE OR REPLACE FUNCTION match_documents(
+  ticket_id uuid,
+  match_count int DEFAULT 5
+)
+RETURNS TABLE (
+  id uuid,
+  document_id uuid,
+  title text,
+  url text,
+  chunk_content text,
+  section_heading text,
+  snippet text,
+  similarity float
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  query_embedding vector(1536);
+BEGIN
+  -- Get embedding for the given ticket_id
+  SELECT te.embedding INTO query_embedding
+  FROM ticket_embeddings te
+  WHERE te.ticket_id = match_documents.ticket_id AND te.content_type = 'combined'
+  LIMIT 1;
+
+  IF query_embedding IS NULL THEN
+    RAISE EXCEPTION 'No embedding found for ticket %', ticket_id;
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    dc.id,
+    dc.document_id,
+    d.title,
+    d.url,
+    dc.chunk_content,
+    dc.section_heading,
+    LEFT(dc.chunk_content, 120) AS snippet,
+    (dc.embedding <=> query_embedding) * -1 + 1 AS similarity
+  FROM document_chunks dc
+  JOIN documents d ON dc.document_id = d.id
+  WHERE dc.embedding IS NOT NULL
+  ORDER BY (dc.embedding <=> query_embedding)
+  LIMIT match_count;
+END;
+$$;
+
 -- Triggers
 CREATE TRIGGER trigger_generate_ticket_number
     BEFORE INSERT ON tickets
