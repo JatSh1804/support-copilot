@@ -6,97 +6,39 @@ export async function GET(request: NextRequest) {
     const supabase = await createClient();
     const { searchParams } = new URL(request.url);
     const ticketNumber = searchParams.get('ticketNumber');
-    const trackingToken = searchParams.get('trackingToken');
+    const email = searchParams.get('email');
 
-    if (!ticketNumber || !trackingToken) {
+    console.log('Received ticketNumber:', ticketNumber);
+    console.log('Received email:', email);
+
+    if (!ticketNumber || !email) {
       return NextResponse.json(
-        { error: 'Ticket number and tracking token are required' },
+        { error: 'ticketNumber and email are required' },
         { status: 400 }
       );
     }
 
-    // Find ticket by tracking token and ticket number
-    const { data: ticket, error } = await supabase
-      .from('tickets')
-      .select(`
-        id,
-        ticket_number,
-        name,
-        email,
-        subject,
-        description,
-        status,
-        priority,
-        created_at,
-        updated_at,
-        resolved_at,
-        ticket_tracking_tokens!inner(tracking_token, expires_at)
-      `)
-      .eq('ticket_number', ticketNumber)
-      .eq('ticket_tracking_tokens.tracking_token', trackingToken)
-      .single();
-
-    if (error || !ticket) {
-      return NextResponse.json(
-        { error: 'Invalid ticket number or tracking token' },
-        { status: 404 }
-      );
-    }
-
-    // Check if tracking token is expired
-    const tokenData = ticket.ticket_tracking_tokens as any;
-    if (new Date(tokenData.expires_at) < new Date()) {
-      return NextResponse.json(
-        { error: 'Tracking token has expired' },
-        { status: 401 }
-      );
-    }
-
-    // Get public responses (non-internal)
-    const { data: responses, error: responsesError } = await supabase
-      .from('ticket_responses')
-      .select(`
-        id,
-        author_name,
-        response_type,
-        content,
-        created_at
-      `)
-      .eq('ticket_id', ticket.id)
-      .eq('is_internal', false)
-      .order('created_at', { ascending: true });
-
-    if (responsesError) {
-      console.error('Error fetching responses:', responsesError);
-    }
-
-    // Remove sensitive data and tracking token info
-    const { ticket_tracking_tokens, ...publicTicket } = ticket;
-
-    return NextResponse.json({
-      ticket: publicTicket,
-      responses: responses || [],
-      statusMessage: getStatusMessage(ticket.status)
+    // Call the RPC function to fetch ticket details
+    const { data, error } = await supabase.rpc('get_ticket_details', {
+      p_ticket_number: ticketNumber,
+      p_email: email
     });
 
+    console.log('RPC call response:', { data, error });
+
+    if (error) {
+      console.error('Error fetching ticket details:', error);
+      return NextResponse.json({ error: 'Failed to fetch ticket details' }, { status: 500 });
+    }
+
+    if (!data) {
+      console.warn('No data returned from get_ticket_details');
+      return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+    }
+
+    return NextResponse.json(data);
   } catch (error) {
     console.error('Unexpected error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-}
-
-function getStatusMessage(status: string): string {
-  const messages = {
-    pending: 'Your ticket has been received and is waiting to be processed.',
-    processing: 'Our AI is analyzing your ticket and determining the best way to help.',
-    classified: 'Your ticket has been analyzed and assigned to the appropriate team.',
-    'in-progress': 'A support team member is working on your ticket.',
-    resolved: 'Your ticket has been resolved. If you need further assistance, please create a new ticket.',
-    closed: 'This ticket has been closed.'
-  };
-  
-  return messages[status as keyof typeof messages] || 'Status unknown.';
 }
