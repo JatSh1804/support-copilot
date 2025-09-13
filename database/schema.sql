@@ -70,7 +70,8 @@ CREATE TABLE ticket_responses (
     response_type response_type NOT NULL,
     content TEXT NOT NULL,
     is_internal BOOLEAN DEFAULT FALSE, -- Internal notes vs customer-facing responses
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    reference JSONB -- Document references
 );
 
 -- Create indexes for responses

@@ -26,56 +26,60 @@ import {
   RefreshCw
 } from 'lucide-react';
 import type { User as SupabaseUser } from "@supabase/supabase-js";
+// import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
 function useAdminTicketDetail(ticketId: string) {
   const [ticket, setTicket] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchTicket() {
-      setLoading(true);
-      try {
-        const res = await fetch(`/api/tickets/${ticketId}`);
-        const data = await res.json();
-        if (data.ticket) {
-          setTicket({
-            ...data.ticket,
-            id: data.ticket.ticket_number,
-            classification: {
-              topicTags: data.ticket.topic_tags || [],
-              sentiment: data.ticket.sentiment || '',
-              priority: data.ticket.ai_priority || '',
-              confidence: data.ticket.classification_confidence || 0,
-              aiResponse: data.aiResponse
-                ? {
-                    answer: data.aiResponse.generated_response,
-                    sources: Array.isArray(data.aiResponse.sources)
-                      ? data.aiResponse.sources
-                      : [],
-                    confidence: data.aiResponse.confidence_score || 0
-                  }
-                : undefined
-            },
-            responses: data.responses || [],
-            createdAt: data.ticket.created_at,
-            updatedAt: data.ticket.updated_at,
-            priority: data.ticket.priority,
-            status: data.ticket.status,
-            name: data.ticket.name,
-            email: data.ticket.email,
-            subject: data.ticket.subject,
-            description: data.ticket.description
-          });
-        }
-      } catch (err) {
-        setTicket(null);
+  async function fetchTicket() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/tickets/${ticketId}`);
+      const data = await res.json();
+      if (data.ticket) {
+        setTicket({
+          ...data.ticket,
+          id: data.ticket.ticket_number,
+          ticketId:data.ticket.id,
+          classification: {
+            topicTags: data.ticket.topic_tags || [],
+            sentiment: data.ticket.sentiment || '',
+            priority: data.ticket.ai_priority || '',
+            confidence: data.ticket.classification_confidence || 0,
+            aiResponse: data.aiResponse
+              ? {
+                  answer: data.aiResponse.generated_response,
+                  sources: Array.isArray(data.aiResponse.sources)
+                    ? data.aiResponse.sources
+                    : [],
+                  confidence: data.aiResponse.confidence_score || 0
+                }
+              : undefined
+          },
+          responses: data.responses || [],
+          createdAt: data.ticket.created_at,
+          updatedAt: data.ticket.updated_at,
+          priority: data.ticket.priority,
+          status: data.ticket.status,
+          name: data.ticket.name,
+          email: data.ticket.email,
+          subject: data.ticket.subject,
+          description: data.ticket.description
+        });
       }
-      setLoading(false);
+    } catch (err) {
+      setTicket(null);
     }
+    setLoading(false);
+  }
+
+  useEffect(() => {
     if (ticketId) fetchTicket();
   }, [ticketId]);
 
-  return { ticket, loading };
+  // expose refresh so callers can re-fetch after actions
+  return { ticket, loading, refresh: fetchTicket };
 }
 
 export default function TicketDetailPage() {
@@ -85,12 +89,13 @@ export default function TicketDetailPage() {
   const [isResponding, setIsResponding] = useState(false);
   const [leftWidth, setLeftWidth] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedRefs, setSelectedRefs] = useState<number[]>([]);
   
   const router = useRouter();
   const params = useParams();
   const supabase = createClient();
-  const ticketId = params.ticketId as string;
-  const { ticket, loading } = useAdminTicketDetail(ticketId);
+  const ticketId = params?.ticketId as string;
+  const { ticket, loading, refresh } = useAdminTicketDetail(ticketId);
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -184,14 +189,57 @@ export default function TicketDetailPage() {
     }
   };
 
+  // Handle reference selection (multi-select with checkboxes)
+  const handleReferenceToggle = (idx: number) => {
+    setSelectedRefs((prev) =>
+      prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx]
+    );
+  };
+
+  // Use AI response button handler
+  const handleUseAIResponse = () => {
+    if (ticket?.classification?.aiResponse?.answer) {
+      setResponse(ticket.classification.aiResponse.answer);
+    }
+    // Optionally, select all references by default
+    setSelectedRefs(
+      ticket.classification?.aiResponse?.sources
+        ? ticket.classification.aiResponse.sources.map((_: any, idx: number) => idx)
+        : []
+    );
+  };
+
   const handleSendResponse = async () => {
     setIsResponding(true);
-    // Simulate API call
-    setTimeout(() => {
-      setResponse('');
-      setIsResponding(false);
-      // In real app, would update ticket responses
-    }, 1000);
+    try {
+      // Only send selected references
+      const refsToSend =
+        ticket.classification?.aiResponse?.sources?.filter(
+          (_: any, idx: number) => selectedRefs.includes(idx)
+        ) || [];
+      const res = await fetch(`/api/tickets/${ticketId}/response`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticketId: ticket.ticketId,
+          content: response,
+          references: refsToSend,
+          status: 'resolved' // request that server mark ticket resolved
+        })
+      });
+
+      const payload = await res.json().catch(() => null);
+      if (res.ok && payload?.success) {
+        await refresh();
+        setResponse('');
+        setSelectedRefs([]);
+      } else {
+        console.error('Failed to submit response', payload);
+      }
+    } catch (err) {
+      console.error('Error sending response', err);
+    }
+    setIsResponding(false);
   };
 
   if (loading) {
@@ -280,12 +328,12 @@ export default function TicketDetailPage() {
             </div>
 
             {/* Conversation */}
-            <div className="flex-1 p-6 overflow-y-auto">
-              <h4 className="font-semibold mb-4 flex items-center gap-2">
+            <div className="flex-1 p-6">
+              {/* <h4 className="font-semibold mb-4 flex items-center gap-2">
                 <MessageSquare className="h-4 w-4" />
                 Conversation
-              </h4>
-              <div className="space-y-4">
+              </h4> */}
+              <div className="space-y-4 max-h-[40vh] overflow-y-auto">
                 {ticket.responses.map((msg: any) => (
                   <div key={msg.id} className="bg-muted/50 rounded-lg p-4">
                     <div className="flex items-center gap-2 mb-2">
@@ -294,14 +342,33 @@ export default function TicketDetailPage() {
                         {new Date(msg.timestamp).toLocaleString()}
                       </span>
                     </div>
-                    <p className="text-sm">{msg.content}</p>
+                    <p className="text-sm break-words whitespace-pre-line">{msg.content}</p>
+                    {/* Render references if present */}
+                    {Array.isArray(msg.references) && msg.references.length > 0 && (
+                      <div className="mt-2 space-y-2">
+                        <div className="font-semibold text-xs text-muted-foreground">References:</div>
+                        {msg.references.map((ref: any, idx: number) => (
+                          <div key={idx} className="border rounded p-2 flex items-start gap-2">
+                            <div className="flex-1">
+                              <div className="font-medium text-xs">{ref.title}</div>
+                              <div className="text-xs text-muted-foreground">{ref.snippet}</div>
+                            </div>
+                            <Button variant="ghost" size="sm" asChild>
+                              <a href={ref.url} target="_blank" rel="noopener noreferrer">
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
 
             {/* Response Section */}
-            <div className="p-6 border-t bg-muted/30">
+            <div className="p-6 border-t bg-muted/30 overflow-y-auto">
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <Label className="font-semibold">Your Response</Label>
@@ -310,7 +377,7 @@ export default function TicketDetailPage() {
                       <Save className="h-3 w-3 mr-1" />
                       Draft
                     </Button>
-                    <Button variant="outline" size="sm">
+                    <Button variant="outline" size="sm" onClick={handleUseAIResponse}>
                       <RefreshCw className="h-3 w-3 mr-1" />
                       Use AI Response
                     </Button>
@@ -322,6 +389,33 @@ export default function TicketDetailPage() {
                   onChange={(e) => setResponse(e.target.value)}
                   rows={4}
                 />
+                {/* References selection */}
+                {ticket.classification?.aiResponse?.sources?.length > 0 && (
+                  <div className="mt-4">
+                    <Label className="font-semibold mb-2 block">Select References to Send</Label>
+                    <div className="space-y-2 max-h-48 overflow-y-auto border rounded bg-background">
+                      {ticket.classification.aiResponse.sources.map((ref: any, idx: number) => (
+                        <div key={idx} className="flex items-center gap-2 border-b last:border-b-0 p-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedRefs.includes(idx)}
+                            onChange={() => handleReferenceToggle(idx)}
+                            id={`ref-${idx}`}
+                          />
+                          <label htmlFor={`ref-${idx}`} className="flex-1 cursor-pointer">
+                            <span className="font-medium text-xs">{ref.title}</span>
+                            <span className="text-xs text-muted-foreground block">{ref.snippet}</span>
+                          </label>
+                          <Button variant="ghost" size="sm" asChild>
+                            <a href={ref.url} target="_blank" rel="noopener noreferrer">
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <Select defaultValue={ticket.status}>
                     <SelectTrigger className="w-32">
@@ -366,7 +460,7 @@ export default function TicketDetailPage() {
                 AI Analysis & Classification
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
-                Automated analysis with {Math.round(ticket.classification.confidence * 100)}% confidence
+                Automated analysis with {Math.round(ticket?.classification?.confidence * 100)}% confidence
               </p>
             </div>
 
