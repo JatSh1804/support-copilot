@@ -12,6 +12,13 @@ const compat = new FlatCompat({
 const eslintConfig = [
   ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
+    ignorePatterns: [
+      // Ignore Supabase Edge Functions (Deno environment)
+      "supabase/**/*",
+      "**/supabase/**/*",
+      "**/*.edge.ts",
+      "**/*.edge.js"
+    ],
     rules: {
       // Disable unused variables rule
       "@typescript-eslint/no-unused-vars": "off",

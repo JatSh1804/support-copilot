@@ -1,0 +1,12 @@
+
+# .eslintignore
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Ignore Supabase Edge Functions (Deno environment)
+supabase/
+supabase/**/*
+**/supabase/**/*
