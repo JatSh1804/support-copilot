@@ -181,7 +181,7 @@ export class AtlanDocsScraper {
 
       const html = await response.text();
       return this.extractHyperlinksFromHTML(html, url);
-    } catch (error) {
+    } catch (error:any) {
       console.log(`Failed to extract links from ${url}:`, error.message);
       return [];
     }
@@ -331,7 +331,7 @@ export class AtlanDocsScraper {
             console.log(`[scraper] Scraped page: ${url} (title: ${content.title}, length: ${content.content.length})`);
           }
           return content && this.isValueableContent(content) ? content : null;
-        } catch (error) {
+        } catch (error:any) {
           console.error(`[scraper] Failed to scrape ${url}:`, error.message);
           return null;
         }
@@ -407,7 +407,7 @@ export class AtlanDocsScraper {
       
       return content;
 
-    } catch (error) {
+    } catch (error:any) {
       console.error(`Error scraping page ${url}:`, error.message);
       return null;
     }
