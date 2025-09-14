@@ -148,10 +148,10 @@ export default function AdminTicketsPage() {
             <BarChart3 className="h-4 w-4 mr-2" />
             Analytics
           </Button> */}
-          {/* <Button variant="outline" size="sm" onClick={() => router.push('/admin/chat')}>
+          <Button variant="outline" size="sm" onClick={() => router.push('/admin/tickets/batch')}>
             <Brain className="h-4 w-4 mr-2" />
-            AI Agent
-          </Button> */}
+            Batch upload
+          </Button>
         </div>
       </div>
 

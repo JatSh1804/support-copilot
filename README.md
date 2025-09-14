@@ -7,6 +7,14 @@ This project enables seamless support ticket management, automated classificatio
 
 ## Architecture Overview
 
+<!-- Architectural Diagrams -->
+<p align="center">
+  <img src="./workflow.png" alt="Embedding & Classification Pipeline" width="700"/>
+</p>
+<p align="center">
+  <img src="./architectural-diagram.png" alt="System Architecture Overview" width="700"/>
+</p>
+
 - **AI Embedding & Classification Pipeline:**  
   - Incoming tickets are enqueued for processing via a queue system.
   - Edge function workers pick up jobs from the queue to perform semantic embedding (using external models like OpenAI or HuggingFace).
