@@ -1,105 +1,167 @@
-<a href="https://demo-nextjs-with-supabase.vercel.app/">
-  <img alt="Next.js and Supabase Starter Kit - the fastest way to build apps with Next.js and Supabase" src="https://demo-nextjs-with-supabase.vercel.app/opengraph-image.png">
-  <h1 align="center">Next.js and Supabase Starter Kit</h1>
-</a>
+# Atlan Ticketing & AI Classification Platform
 
-<p align="center">
- The fastest way to build apps with Next.js and Supabase
-</p>
+A modern ticketing system built with **Next.js**, **Supabase**, and **a queue-cron classification worker**.  
+This project enables seamless support ticket management, automated classification, and intelligent response generation for customer queries.
 
-<p align="center">
-  <a href="#features"><strong>Features</strong></a> ·
-  <a href="#demo"><strong>Demo</strong></a> ·
-  <a href="#deploy-to-vercel"><strong>Deploy to Vercel</strong></a> ·
-  <a href="#clone-and-run-locally"><strong>Clone and run locally</strong></a> ·
-  <a href="#feedback-and-issues"><strong>Feedback and issues</strong></a>
-  <a href="#more-supabase-examples"><strong>More Examples</strong></a>
-</p>
-<br/>
+---
 
-## Features
+## Architecture Overview
 
-- Works across the entire [Next.js](https://nextjs.org) stack
-  - App Router
-  - Pages Router
-  - Middleware
-  - Client
-  - Server
-  - It just works!
-- supabase-ssr. A package to configure Supabase Auth to use cookies
-- Password-based authentication block installed via the [Supabase UI Library](https://supabase.com/ui/docs/nextjs/password-based-auth)
-- Styling with [Tailwind CSS](https://tailwindcss.com)
-- Components with [shadcn/ui](https://ui.shadcn.com/)
-- Optional deployment with [Supabase Vercel Integration and Vercel deploy](#deploy-your-own)
-  - Environment variables automatically assigned to Vercel project
+- **AI Embedding & Classification Pipeline:**  
+  - Incoming tickets are enqueued for processing via a queue system.
+  - Edge function workers pick up jobs from the queue to perform semantic embedding (using external models like OpenAI or HuggingFace).
+  - Embeddings are stored in Supabase for similarity search and retrieval.
+  - Classification models analyze ticket content for:
+    - Topic tags
+    - Sentiment
+    - Priority
+  - A cron job service regularly triggers edge function workers to process new or pending tickets, ensuring timely embedding and classification.
+  - AI-generated responses are created using LLMs, with references and confidence scores.
 
-## Demo
+---
 
-You can view a fully working demo at [demo-nextjs-with-supabase.vercel.app](https://demo-nextjs-with-supabase.vercel.app/).
+## Backend Embedding & Classification Pipeline
 
-## Deploy to Vercel
+This section describes the backend pipeline for ticket embeddings and classification, detailing the workflow from ticket submission to AI-powered classification and reference retrieval.
 
-Vercel deployment will guide you through creating a Supabase account and project.
+### 1. Ticket Submission
 
-After installation of the Supabase integration, all relevant environment variables will be assigned to the project so the deployment is fully functioning.
+- Users or admins submit tickets via the UI or batch upload.
+- Each ticket contains metadata (id, subject, description, name, email).
+- Upon creation, tickets are immediately added to a processing queue.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel%2Fnext.js%2Ftree%2Fcanary%2Fexamples%2Fwith-supabase&project-name=nextjs-with-supabase&repository-name=nextjs-with-supabase&demo-title=nextjs-with-supabase&demo-description=This+starter+configures+Supabase+Auth+to+use+cookies%2C+making+the+user%27s+session+available+throughout+the+entire+Next.js+app+-+Client+Components%2C+Server+Components%2C+Route+Handlers%2C+Server+Actions+and+Middleware.&demo-url=https%3A%2F%2Fdemo-nextjs-with-supabase.vercel.app%2F&external-id=https%3A%2F%2Fgithub.com%2Fvercel%2Fnext.js%2Ftree%2Fcanary%2Fexamples%2Fwith-supabase&demo-image=https%3A%2F%2Fdemo-nextjs-with-supabase.vercel.app%2Fopengraph-image.png)
+### 2. Queueing System
 
-The above will also clone the Starter kit to your GitHub, you can clone that locally and develop locally.
+- A queue system (a pgmq queue) tracks tickets awaiting embedding and classification.
+- Each new ticket is enqueued with its metadata and status.
 
-If you wish to just develop locally and not deploy to Vercel, [follow the steps below](#clone-and-run-locally).
+### 3. Embedding Generation
 
-## Clone and run locally
+- Edge function workers or serverless jobs monitor the queue for new tickets.
+- For each ticket, the worker:
+  - Generates a semantic vector embedding for the ticket description using external AI models (e.g., OpenAI, HuggingFace).
+  - Stores the embedding in Supabase for fast similarity search and retrieval and enqueue a job for classification queue once embeddings are generated.
 
-1. You'll first need a Supabase project which can be made [via the Supabase dashboard](https://database.new)
+### 4. Classification
 
-2. Create a Next.js app using the Supabase Starter template npx command
+- The worker analyzes the ticket text using AI models to assign:
+  - **Topic tags** (e.g., "Snowflake", "Lineage", "Integration")
+  - **Sentiment** (e.g., "frustrated", "curious", "neutral")
+  - **Priority** (e.g., "high", "medium", "low")
+- Classification results are saved with the ticket record for downstream use.
 
+### 5. Reference Document Retrieval
+
+- Using the generated embedding, the system performs a similarity search against a corpus of reference documents stored in Supabase.
+- The most relevant documents are retrieved and attached to the ticket for context and support.
+
+### 6. Similar Ticket Search
+
+- The embedding is also used to search for similar tickets in the database.
+- Similar tickets are surfaced to help admins identify recurring issues and leverage previous solutions.
+
+### 7. Cron Services & Triggers
+
+- A cron job service runs at regular intervals to trigger edge function workers.
+- Ensures all new or pending tickets are picked up for embedding, classification, and reference retrieval.
+- Triggers update ticket status as processing progresses.
+
+### 8. AI Response Generation
+
+- For each ticket, an LLM generates a suggested response, including:
+  - Answer text
+  - Source references (from similarity search)
+  - Confidence score
+
+### 9. Admin Review & Action
+
+- Admins view ticket details, AI analysis, suggested responses, references, and similar tickets.
+- Responses can be edited, references selected, and sent to the user.
+- Ticket status is updated accordingly.
+
+---
+
+## Documentation Scraper & Reference Embedding Pipeline
+
+To provide high-quality references for ticket responses, the platform includes a documentation scraper pipeline:
+
+### 1. Scraping Atlan Docs & Developer Site
+
+- A custom scraper crawls all links from the Atlan documentation and developer website.
+- The scraper recursively discovers and visits all internal documentation pages.
+- For each page, it extracts the main content, filtering out navigation, ads, and irrelevant sections.
+
+### 2. Text Extraction & Cleaning
+
+- The scraper parses each page to extract relevant text, such as guides, API docs, troubleshooting steps, and FAQs.
+- Extracted text is cleaned and segmented into logical chunks (e.g., paragraphs, sections).
+
+### 3. Embedding Generation for Docs
+
+- Each text chunk is processed using an AI model (e.g., OpenAI, HuggingFace) to generate a semantic vector embedding.
+- Embeddings, along with metadata (URL, title, section), are stored in Supabase.
+
+### 4. Reference Retrieval for Tickets
+
+- When a ticket is processed, its embedding is used to perform a similarity search against the documentation embeddings.
+- The most relevant documentation chunks are retrieved and attached to the ticket as references.
+- These references help generate accurate, context-aware AI responses for users.
+
+---
+
+## Key Features
+
+- **Batch Ticket Creation:**  
+  Easily upload multiple tickets via JSON input, assigning a common name and email.
+
+- **AI-Powered Classification:**  
+  Automated tagging, sentiment analysis, and priority assessment for every ticket.
+
+- **Intelligent Response Generation:**  
+  LLM-generated answers with relevant references and confidence scores.
+
+- **Admin Dashboard:**  
+  Manage tickets, review AI analysis, and send responses with reference selection.
+
+- **Secure & Scalable:**  
+  Supabase handles authentication, data storage, and vector embeddings.
+
+---
+
+## Getting Started
+
+1. **Clone the repository:**
    ```bash
-   npx create-next-app --example with-supabase with-supabase-app
+   git clone <your-repo-url>
+   cd atlan
    ```
 
+2. **Configure environment variables:**
+   - Copy `.env.example` to `.env.local`
+   - Set your Supabase project URL, anon key, and service role key.
+
+3. **Install dependencies:**
    ```bash
-   yarn create next-app --example with-supabase with-supabase-app
+   npm install
    ```
 
-   ```bash
-   pnpm create next-app --example with-supabase with-supabase-app
-   ```
-
-3. Use `cd` to change into the app's directory
-
-   ```bash
-   cd with-supabase-app
-   ```
-
-4. Rename `.env.example` to `.env.local` and update the following:
-
-   ```
-   NEXT_PUBLIC_SUPABASE_URL=[INSERT SUPABASE PROJECT URL]
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=[INSERT SUPABASE PROJECT API ANON KEY]
-   ```
-
-   Both `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` can be found in [your Supabase project's API settings](https://supabase.com/dashboard/project/_?showConnect=true)
-
-5. You can now run the Next.js local development server:
-
+4. **Run the development server:**
    ```bash
    npm run dev
    ```
 
-   The starter kit should now be running on [localhost:3000](http://localhost:3000/).
+5. **Access the admin dashboard:**
+   - Visit `/admin/tickets` for ticket management.
+   - Visit `/admin/tickets/batch` for batch ticket upload.
 
-6. This template comes with the default shadcn/ui style initialized. If you instead want other ui.shadcn styles, delete `components.json` and [re-install shadcn/ui](https://ui.shadcn.com/docs/installation/next)
+---
 
-> Check out [the docs for Local Development](https://supabase.com/docs/guides/getting-started/local-development) to also run Supabase locally.
+## Feedback & Issues
 
-## Feedback and issues
+Please open issues or feature requests in this repository.
 
-Please file feedback and issues over on the [Supabase GitHub org](https://github.com/supabase/supabase/issues/new/choose).
+---
 
-## More Supabase examples
+## License
 
-- [Next.js Subscription Payments Starter](https://github.com/vercel/nextjs-subscription-payments)
-- [Cookie-based Auth and the Next.js 13 App Router (free course)](https://youtube.com/playlist?list=PL5S4mPUpp4OtMhpnp93EFSo42iQ40XjbF)
-- [Supabase Auth and the Next.js App Router](https://github.com/supabase/supabase/tree/master/examples/auth/nextjs)
+MIT
