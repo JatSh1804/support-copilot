@@ -18,9 +18,9 @@ export default function AdminLayout({
                 <Link href="/admin/tickets" className="hover:underline">
                   Tickets
                 </Link>
-                <Link href="/admin/chat" className="hover:underline">
+                {/* <Link href="/admin/chat" className="hover:underline">
                   AI Agent
-                </Link>
+                </Link> */}
               </div>
             </div>
             <AuthButton />

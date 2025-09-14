@@ -334,6 +334,8 @@ export default function TicketDetailPage() {
                 Conversation
               </h4> */}
               <div className="space-y-4 max-h-[40vh] overflow-y-auto">
+                 <p className="text-sm break-words whitespace-pre-line">{ticket.description}</p>
+
                 {ticket.responses.map((msg: any) => (
                   <div key={msg.id} className="bg-muted/50 rounded-lg p-4">
                     <div className="flex items-center gap-2 mb-2">

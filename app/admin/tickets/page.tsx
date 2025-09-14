@@ -144,14 +144,14 @@ export default function AdminTicketsPage() {
           <p className="text-muted-foreground">Manage and analyze customer support tickets</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm">
+          {/* <Button variant="outline" size="sm">
             <BarChart3 className="h-4 w-4 mr-2" />
             Analytics
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => router.push('/admin/chat')}>
+          </Button> */}
+          {/* <Button variant="outline" size="sm" onClick={() => router.push('/admin/chat')}>
             <Brain className="h-4 w-4 mr-2" />
             AI Agent
-          </Button>
+          </Button> */}
         </div>
       </div>
 
