@@ -3,11 +3,11 @@ import { createClient } from '@/lib/supabase/server';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { ticketId: string } }
+  { params }: { params: Promise<{ ticketId: string }> }
 ) {
   try {
     const supabase = await createClient();
-    const { ticketId } = params;
+    const { ticketId } = await params; // Await the params Promise
     const { searchParams } = new URL(request.url);
     const trackingToken = searchParams.get('token');
 
@@ -155,11 +155,11 @@ export async function GET(
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { ticketId: string } }
+  { params }: { params: Promise<{ ticketId: string }> }
 ) {
   try {
     const supabase = await createClient();
-    const { ticketId } = params;
+    const { ticketId } = await params; // Await the params Promise
 
     // Check admin authentication
     const { data: { user } } = await supabase.auth.getUser();
@@ -188,7 +188,7 @@ export async function PATCH(
     }
 
     // Update ticket
-    const updateData: any = {};
+    const updateData: Record<string, unknown> = {};
     if (status) updateData.status = status;
     if (priority) updateData.priority = priority;
     if (assignedTo) updateData.assigned_to = assignedTo;
