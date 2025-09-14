@@ -40,32 +40,32 @@ function useAdminTicketDetail(ticketId: string) {
       if (data.ticket) {
         setTicket({
           ...data.ticket,
-          id: data.ticket.ticket_number,
-          ticketId:data.ticket.id,
+          id: data.ticket.ticket_number ?? '',
+          ticketId: data.ticket.id ?? '',
           classification: {
-            topicTags: data.ticket.topic_tags || [],
-            sentiment: data.ticket.sentiment || '',
-            priority: data.ticket.ai_priority || '',
-            confidence: data.ticket.classification_confidence || 0,
+            topicTags: data.ticket.topic_tags ?? [],
+            sentiment: data.ticket.sentiment ?? '',
+            priority: data.ticket.ai_priority ?? '',
+            confidence: data.ticket.classification_confidence ?? 0,
             aiResponse: data.aiResponse
               ? {
-                  answer: data.aiResponse.generated_response,
+                  answer: data.aiResponse.generated_response ?? '',
                   sources: Array.isArray(data.aiResponse.sources)
                     ? data.aiResponse.sources
                     : [],
-                  confidence: data.aiResponse.confidence_score || 0
+                  confidence: data.aiResponse.confidence_score ?? 0
                 }
               : undefined
           },
-          responses: data.responses || [],
-          createdAt: data.ticket.created_at,
-          updatedAt: data.ticket.updated_at,
-          priority: data.ticket.priority,
-          status: data.ticket.status,
-          name: data.ticket.name,
-          email: data.ticket.email,
-          subject: data.ticket.subject,
-          description: data.ticket.description
+          responses: data.responses ?? [],
+          createdAt: data.ticket.created_at ?? '',
+          updatedAt: data.ticket.updated_at ?? '',
+          priority: data.ticket.priority ?? '',
+          status: data.ticket.status ?? '',
+          name: data.ticket.name ?? '',
+          email: data.ticket.email ?? '',
+          subject: data.ticket.subject ?? '',
+          description: data.ticket.description ?? ''
         });
       }
     } catch (err) {
@@ -281,15 +281,15 @@ export default function TicketDetailPage() {
           </Button>
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
-              {ticket.id}
-              <Badge className={getStatusColor(ticket.status)}>
-                {ticket.status}
+              {ticket.id ?? ''}
+              <Badge className={getStatusColor(ticket.status ?? '')}>
+                {ticket.status ?? ''}
               </Badge>
-              <Badge className={getPriorityColor(ticket.priority)}>
-                {ticket.priority}
+              <Badge className={getPriorityColor(ticket.priority ?? '')}>
+                {ticket.priority ?? ''}
               </Badge>
             </h1>
-            <p className="text-muted-foreground">{ticket.subject}</p>
+            <p className="text-muted-foreground">{ticket.subject ?? ''}</p>
           </div>
         </div>
       </div>
@@ -312,15 +312,15 @@ export default function TicketDetailPage() {
                   <User className="h-5 w-5 text-primary" />
                 </div>
                 <div>
-                  <h3 className="font-semibold">{ticket.name}</h3>
+                  <h3 className="font-semibold">{ticket.name ?? ''}</h3>
                   <div className="flex items-center gap-4 text-sm text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Mail className="h-3 w-3" />
-                      {ticket.email}
+                      {ticket.email ?? ''}
                     </span>
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
-                      {new Date(ticket.createdAt).toLocaleDateString()}
+                      {ticket.createdAt ? new Date(ticket.createdAt).toLocaleDateString() : ''}
                     </span>
                   </div>
                 </div>
@@ -334,29 +334,29 @@ export default function TicketDetailPage() {
                 Conversation
               </h4> */}
               <div className="space-y-4 max-h-[40vh] overflow-y-auto">
-                 <p className="text-sm break-words whitespace-pre-line">{ticket.description}</p>
+                 <p className="text-sm break-words whitespace-pre-line">{ticket.description ?? ''}</p>
 
-                {ticket.responses.map((msg: any) => (
-                  <div key={msg.id} className="bg-muted/50 rounded-lg p-4">
+                {(ticket.responses ?? []).map((msg: any) => (
+                  <div key={msg?.id ?? ''} className="bg-muted/50 rounded-lg p-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="font-medium">{msg.author}</span>
+                      <span className="font-medium">{msg?.author ?? ''}</span>
                       <span className="text-xs text-muted-foreground">
-                        {new Date(msg.timestamp).toLocaleString()}
+                        {msg?.timestamp ? new Date(msg.timestamp).toLocaleString() : ''}
                       </span>
                     </div>
-                    <p className="text-sm break-words whitespace-pre-line">{msg.content}</p>
+                    <p className="text-sm break-words whitespace-pre-line">{msg?.content ?? ''}</p>
                     {/* Render references if present */}
-                    {Array.isArray(msg.references) && msg.references.length > 0 && (
+                    {Array.isArray(msg?.references) && msg.references.length > 0 && (
                       <div className="mt-2 space-y-2">
                         <div className="font-semibold text-xs text-muted-foreground">References:</div>
                         {msg.references.map((ref: any, idx: number) => (
                           <div key={idx} className="border rounded p-2 flex items-start gap-2">
                             <div className="flex-1">
-                              <div className="font-medium text-xs">{ref.title}</div>
-                              <div className="text-xs text-muted-foreground">{ref.snippet}</div>
+                              <div className="font-medium text-xs">{ref?.title ?? ''}</div>
+                              <div className="text-xs text-muted-foreground">{ref?.snippet ?? ''}</div>
                             </div>
                             <Button variant="ghost" size="sm" asChild>
-                              <a href={ref.url} target="_blank" rel="noopener noreferrer">
+                              <a href={ref?.url ?? '#'} target="_blank" rel="noopener noreferrer">
                                 <ExternalLink className="h-3 w-3" />
                               </a>
                             </Button>
@@ -396,7 +396,7 @@ export default function TicketDetailPage() {
                   <div className="mt-4">
                     <Label className="font-semibold mb-2 block">Select References to Send</Label>
                     <div className="space-y-2 max-h-48 overflow-y-auto border rounded bg-background">
-                      {ticket.classification.aiResponse.sources.map((ref: any, idx: number) => (
+                      {(ticket.classification.aiResponse.sources ?? []).map((ref: any, idx: number) => (
                         <div key={idx} className="flex items-center gap-2 border-b last:border-b-0 p-2">
                           <input
                             type="checkbox"
@@ -405,11 +405,11 @@ export default function TicketDetailPage() {
                             id={`ref-${idx}`}
                           />
                           <label htmlFor={`ref-${idx}`} className="flex-1 cursor-pointer">
-                            <span className="font-medium text-xs">{ref.title}</span>
-                            <span className="text-xs text-muted-foreground block">{ref.snippet}</span>
+                            <span className="font-medium text-xs">{ref?.title ?? ''}</span>
+                            <span className="text-xs text-muted-foreground block">{ref?.snippet ?? ''}</span>
                           </label>
                           <Button variant="ghost" size="sm" asChild>
-                            <a href={ref.url} target="_blank" rel="noopener noreferrer">
+                            <a href={ref?.url ?? '#'} target="_blank" rel="noopener noreferrer">
                               <ExternalLink className="h-3 w-3" />
                             </a>
                           </Button>
@@ -419,7 +419,7 @@ export default function TicketDetailPage() {
                   </div>
                 )}
                 <div className="flex items-center gap-2">
-                  <Select defaultValue={ticket.status}>
+                  <Select defaultValue={ticket.status ?? ''}>
                     <SelectTrigger className="w-32">
                       <SelectValue />
                     </SelectTrigger>
@@ -462,7 +462,7 @@ export default function TicketDetailPage() {
                 AI Analysis & Classification
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
-                Automated analysis with {Math.round(ticket?.classification?.confidence * 100)}% confidence
+                Automated analysis with {Math.round((ticket?.classification?.confidence ?? 0) * 100)}% confidence
               </p>
             </div>
 
@@ -477,7 +477,7 @@ export default function TicketDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {ticket.classification.topicTags.map((tag: string, index: number) => (
+                    {ticket.classification.topicTags?.map?.((tag: string, index: number) => (
                       <Badge key={index} variant="secondary">
                         {tag}
                       </Badge>
@@ -495,8 +495,8 @@ export default function TicketDetailPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Badge className={getSentimentColor(ticket.classification.sentiment)}>
-                    {ticket.classification.sentiment}
+                  <Badge className={getSentimentColor(ticket.classification?.sentiment ?? '')}>
+                    {ticket.classification?.sentiment ?? ''}
                   </Badge>
                 </CardContent>
               </Card>
@@ -510,8 +510,8 @@ export default function TicketDetailPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Badge className={getPriorityColor(ticket.classification.priority)}>
-                    {ticket.classification.priority}
+                  <Badge className={getPriorityColor(ticket.classification?.priority ?? '')}>
+                    {ticket.classification?.priority ?? ''}
                   </Badge>
                 </CardContent>
               </Card>
@@ -523,14 +523,14 @@ export default function TicketDetailPage() {
                     <Brain className="h-4 w-4" />
                     AI Generated Response
                     <Badge variant="outline" className="ml-auto">
-                      {Math.round(ticket.classification.aiResponse.confidence * 100)}% confidence
+                      {Math.round((ticket.classification?.aiResponse?.confidence ?? 0) * 100)}% confidence
                     </Badge>
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="prose prose-sm max-w-none">
                     <p className="whitespace-pre-line text-sm">
-                      {ticket.classification.aiResponse.answer}
+                      {ticket.classification?.aiResponse?.answer ?? ''}
                     </p>
                   </div>
                 </CardContent>
@@ -546,15 +546,15 @@ export default function TicketDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
-                    {ticket.classification.aiResponse.sources.map((source: any, index: number) => (
+                    {(ticket.classification?.aiResponse?.sources ?? []).map((source: any, index: number) => (
                       <div key={index} className="border rounded-lg p-3 hover:bg-muted/50 transition-colors">
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex-1">
-                            <h5 className="font-medium text-sm">{source.title}</h5>
-                            <p className="text-xs text-muted-foreground mt-1">{source.snippet}</p>
+                            <h5 className="font-medium text-sm">{source?.title ?? ''}</h5>
+                            <p className="text-xs text-muted-foreground mt-1">{source?.snippet ?? ''}</p>
                           </div>
                           <Button variant="ghost" size="sm" asChild>
-                            <a href={source.url} target="_blank" rel="noopener noreferrer">
+                            <a href={source?.url ?? '#'} target="_blank" rel="noopener noreferrer">
                               <ExternalLink className="h-3 w-3" />
                             </a>
                           </Button>

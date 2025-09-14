@@ -87,7 +87,7 @@ export default function TrackPage() {
           <div className="p-6 border rounded-lg bg-muted/30">
             <h2 className="text-xl font-semibold">Responses</h2>
             <div className="space-y-4 mt-4">
-              {ticket.responses.map((response: any) => (
+              {ticket?.responses?.map((response: any) => (
                 <div key={response.id} className="p-4 border rounded-lg bg-background">
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{response.author}</span>
@@ -100,10 +100,10 @@ export default function TrackPage() {
                     <div className="mt-2">
                       <h4 className="text-sm font-semibold">References:</h4>
                       <ul className="list-disc list-inside">
-                        {response.reference.map((ref: any, idx: number) => (
+                        {response?.reference?.map((ref: any, idx: number) => (
                           <li key={idx}>
-                            <a href={ref.url} target="_blank" rel="noopener noreferrer" className="text-blue-500">
-                              {ref.title}
+                            <a href={ref?.url} target="_blank" rel="noopener noreferrer" className="text-blue-500">
+                              {ref?.title}
                             </a>
                           </li>
                         ))}
