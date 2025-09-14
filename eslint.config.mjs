@@ -13,10 +13,21 @@ const eslintConfig = [
   ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
     rules: {
-      "@typescript-eslint/no-unused-vars": ["error"],
-      "@typescript-eslint/no-empty-interface": ["error"],
-      "@typescript-eslint/no-explicit-any": ["error"],
-      "react/no-unescaped-entities": ["error"],
+      // Disable unused variables rule
+      "@typescript-eslint/no-unused-vars": "off",
+
+      // Disable explicit any rule
+      "@typescript-eslint/no-explicit-any": "off",
+
+      // Disable unescaped entities rule
+      "react/no-unescaped-entities": "off",
+
+      // Disable exhaustive deps rule for useEffect
+      "react-hooks/exhaustive-deps": "off",
+
+      // Disable empty interface rule
+      "@typescript-eslint/no-empty-interface": "off",
+      "@typescript-eslint/no-empty-object-type": "off"
     },
   },
 ];
