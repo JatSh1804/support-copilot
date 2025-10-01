@@ -41,7 +41,7 @@ BEGIN
           'author', r.author_name,
           'content', r.content,
           'timestamp', r.created_at,
-          'reference', r.reference
+          'reference', r.reference  -- Changed from 'references' to 'reference'
         )
         ORDER BY r.created_at ASC
       )
